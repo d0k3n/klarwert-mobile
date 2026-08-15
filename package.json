@@ -1,0 +1,27 @@
+{
+  "name": "klarwert-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Klarwert mobile app (Capacitor + TypeScript port of the Python engine)",
+  "scripts": {
+    "build:engine": "esbuild src/api.ts --bundle --format=iife --platform=browser --outfile=web/engine.js",
+    "build:web": "npm run build:engine",
+    "test": "node --test \"tests/*.test.ts\"",
+    "sync": "npm run build:engine && cap sync android",
+    "apk": "npm run sync && cd android && gradlew assembleDebug"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.1"
+  }
+}

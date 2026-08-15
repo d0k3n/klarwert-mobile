@@ -1,0 +1,6 @@
+node_modules/
+web/engine.js
+android/
+dist/
+*.log
+.DS_Store

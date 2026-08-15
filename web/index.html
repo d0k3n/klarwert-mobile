@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Klarwert</title>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="page-header">
+  <div class="header-left">
+    <h1>Klarwert</h1>
+    <span class="header-subtitle">Portfolio Analyzer</span>
+  </div>
+  <div class="header-right">
+    <span class="header-timestamp" id="header-timestamp"></span>
+    <button id="support-btn" onclick="window.openSupport()">&#x2615; Support</button>
+    <button id="feature-btn" onclick="window.openFeatureRequest()">Request a Feature</button>
+    <button id="load-btn" onclick="document.getElementById('csv-input').click()">
+      <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <span>Load CSV</span>
+    </button>
+    <input id="csv-input" type="file" accept=".csv" style="display:none" onchange="window.uploadCSV(this)">
+    <span id="reload-status"></span>
+  </div>
+</div>
+
+<div id="empty-state" style="display:none; margin:24px 0; padding:20px; border:1px dashed #cbd5e1; border-radius:8px; background:#f8fafc;">
+  <h2>No portfolio loaded</h2>
+  <p>Export your transactions CSV from Trade Republic and click <strong>Load CSV</strong> to analyze it.
+  Your data stays on this machine &mdash; nothing is uploaded anywhere.</p>
+</div>
+
+<div class="dash-controls">
+  <button id="expand-all-btn">Expand all</button>
+  <button id="collapse-all-btn">Collapse all</button>
+</div>
+
+<details class="dash-group" id="group-overview" open>
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Overview</h2></summary>
+  <div class="dash-group-body">
+
+<section id="summary-cards" class="cards"></section>
+
+<section id="summary-by-asset-class" class="cards"></section>
+
+<section>
+  <h2>Reconciliation</h2>
+  <div class="table-wrapper">
+  <table id="recon-table">
+    <thead><tr><th>Line</th><th class="num">Amount</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Monthly Realized P&amp;L</h2>
+  <div class="week-nav">
+    <button id="month-prev" onclick="window.monthlyNav(-1)">&laquo; Prev</button>
+    <span id="month-label"></span>
+    <button id="month-next" onclick="window.monthlyNav(1)">Next &raquo;</button>
+  </div>
+  <p id="month-total"></p>
+  <canvas id="monthly-pl-chart"></canvas>
+</section>
+
+<section>
+  <h2>Weekly Realized P&amp;L</h2>
+  <div class="week-nav">
+    <button id="week-prev" onclick="window.weeklyNav(-1)">&laquo; Prev</button>
+    <span id="week-label"></span>
+    <button id="week-next" onclick="window.weeklyNav(1)">Next &raquo;</button>
+  </div>
+  <p id="week-total"></p>
+  <canvas id="weekly-pl-chart"></canvas>
+</section>
+
+<section>
+  <h2>Realized P&amp;L Over Time</h2>
+  <canvas id="pl-evolution-chart"></canvas>
+</section>
+
+  </div>
+</details>
+
+<details class="dash-group" id="group-market">
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Market</h2></summary>
+  <div class="dash-group-body">
+
+<section>
+  <h2>Market Prices</h2>
+  <p>Enter a price per ISIN to override, or auto-fetch current prices from Finnhub.</p>
+  <p><label for="finnhub-key">Finnhub API key:</label>
+  <input type="password" id="finnhub-key" size="28" placeholder="optional (stored on device)">
+  <button id="finnhub-save-btn" onclick="window.saveFinnhubKey()">Save</button>
+  <span id="finnhub-status"></span></p>
+  <p><button id="refresh-prices-btn" onclick="refreshPrices()">Refresh prices (Finnhub)</button> <span id="price-status"></span></p>
+  <div id="price-inputs"></div>
+</section>
+
+  </div>
+</details>
+
+<details class="dash-group" id="group-portfolio">
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Portfolio</h2></summary>
+  <div class="dash-group-body">
+
+<section>
+<h2>Open Positions</h2>
+<div class="table-wrapper">
+<table id="open-positions-table">
+<thead><tr>
+<th data-sort="isin">ISIN</th>
+<th data-sort="name">Name</th>
+<th data-sort="asset_class">Asset Class</th>
+<th data-sort="shares" class="num">Shares</th>
+<th data-sort="average_cost" class="num">Avg Cost</th>
+<th data-sort="total_cost" class="num">Total Cost</th>
+<th data-sort="market_price" class="num">Mkt Price</th>
+<th data-sort="market_value" class="num">Mkt Value</th>
+<th data-sort="unrealized_pl" class="num">Unreal. P&amp;L</th>
+<th data-sort="weight" class="num">Weight</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Closed Positions</h2>
+<div class="table-wrapper">
+<table id="closed-positions-table">
+<thead><tr>
+<th data-sort="isin">ISIN</th>
+<th data-sort="name">Name</th>
+<th data-sort="total_realized_pl" class="num">Realized P&amp;L</th>
+<th data-sort="closed_lots" class="num">Lots</th>
+<th data-sort="total_shares_sold" class="num">Shares Sold</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section>
+  <h2>Results by Product</h2>
+  <div class="table-wrapper">
+  <table id="product-results-table">
+    <thead><tr>
+      <th data-sort="name">Name</th>
+      <th data-sort="isin">ISIN</th>
+      <th data-sort="asset_class">Asset Class</th>
+      <th data-sort="status">Status</th>
+      <th data-sort="total_invested" class="num">Invested</th>
+      <th data-sort="total_realized_pl" class="num">Realized P&amp;L</th>
+      <th data-sort="total_dividends" class="num">Dividends</th>
+      <th data-sort="total_dividend_tax" class="num">Div. WHT</th>
+      <th data-sort="yield_on_cost" class="num">Yield %</th>
+      <th data-sort="total_fees" class="num">Fees</th>
+      <th data-sort="total_trades" class="num">Trades</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section id="product-charts">
+  <h2>Product Charts</h2>
+  <div>
+    <div style="flex:1; min-width:300px;">
+      <h3>Allocation by Product</h3>
+      <canvas id="allocation-chart"></canvas>
+    </div>
+    <div style="flex:1; min-width:300px;">
+      <h3>Dividends by Product</h3>
+      <canvas id="dividend-chart"></canvas>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Derivative Executions</h2>
+  <div class="table-wrapper">
+  <table id="derivative-executions-table">
+    <thead><tr>
+      <th data-sort="name">Name</th>
+      <th data-sort="isin">ISIN</th>
+      <th data-sort="ko_quantity" class="num">KO'd Qty</th>
+      <th data-sort="ko_total" class="num">KO Loss</th>
+      <th data-sort="warrant_return" class="num">Warrant Return</th>
+      <th data-sort="net_result" class="num">Net Result</th>
+      <th data-sort="reconciled">Reconciled?</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+  </div>
+</details>
+
+<details class="dash-group" id="group-income">
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Income &amp; Spending</h2></summary>
+  <div class="dash-group-body">
+
+<section>
+  <h2>Income</h2>
+  <canvas id="income-chart"></canvas>
+  <h3>Dividend History</h3>
+  <div class="table-wrapper">
+  <table id="dividend-history-table">
+  <thead><tr>
+  <th data-sort="date">Date</th>
+  <th data-sort="name">Name</th>
+  <th data-sort="isin">ISIN</th>
+  <th data-sort="gross" class="num">Gross</th>
+  <th data-sort="wht" class="num">WHT</th>
+  <th data-sort="net" class="num">Net</th>
+  <th data-sort="currency">Ccy</th>
+  </tr></thead>
+  <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+<h2>Cash Flow</h2>
+<canvas id="cash-flow-chart"></canvas>
+</section>
+
+<section>
+<h2>Card Spending</h2>
+<canvas id="spending-category-chart"></canvas>
+<canvas id="spending-monthly-chart"></canvas>
+<div class="table-wrapper">
+<table id="card-expenses-table">
+<thead><tr>
+<th data-sort="datetime">Date</th>
+<th data-sort="name">Merchant</th>
+<th data-sort="amount" class="num">Amount</th>
+<th data-sort="description">Description</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Category Rules</h2>
+<p class="rules-hint">Assign categories to merchants so their spending is grouped automatically. Rules override MCC-based categories.</p>
+<div class="table-wrapper">
+<h3>Uncategorized vendors</h3>
+<table id="uncategorized-vendors-table">
+<thead><tr>
+<th>Matches</th>
+<th class="num">Txns</th>
+<th class="num">Total</th>
+<th>Category</th>
+<th></th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<h3>Your rules</h3>
+<table id="card-rules-table">
+<thead><tr>
+<th>Matches</th>
+<th>Category</th>
+<th></th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+  </div>
+</details>
+
+<details class="dash-group" id="group-tax">
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Tax &amp; Audit</h2></summary>
+  <div class="dash-group-body">
+
+<section>
+<h2>Sale Lot Matches (Audit Trail)</h2>
+<div class="table-wrapper">
+<table id="lot-matches-table">
+<thead><tr>
+<th data-sort="sell_datetime">Sold</th>
+<th data-sort="name">Name</th>
+<th data-sort="isin">ISIN</th>
+<th data-sort="shares" class="num">Shares</th>
+<th data-sort="proceeds" class="num">Proceeds</th>
+<th data-sort="cost_basis" class="num">Cost Basis</th>
+<th data-sort="pl" class="num">P&amp;L</th>
+<th data-sort="lot_datetime">Acquired</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Tax Report</h2>
+<div>
+  <label for="tax-year">Year:</label>
+  <input type="number" id="tax-year" min="2000" max="2100" step="1">
+  <button id="tax-report-btn" onclick="window.loadTaxReport()">Load</button>
+  <button id="tax-csv-btn" onclick="window.downloadTaxCsv()">Download CSV</button>
+</div>
+<div class="table-wrapper">
+<table id="tax-disposals-table">
+<thead><tr>
+<th data-sort="date">Date</th>
+<th data-sort="name">Name</th>
+<th data-sort="isin">ISIN</th>
+<th data-sort="shares" class="num">Shares</th>
+<th data-sort="proceeds" class="num">Proceeds</th>
+<th data-sort="cost_basis" class="num">Cost Basis</th>
+<th data-sort="fees" class="num">Fees</th>
+<th data-sort="gain" class="num">Gain</th>
+<th data-sort="acquired">Acquired</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table id="tax-income-table">
+<thead><tr><th>Type</th><th class="num">Gross</th><th class="num">WHT</th><th class="num">Net</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Recent Transactions</h2>
+<input type="text" id="tx-filter" placeholder="Filter by symbol or name...">
+<table id="transactions-table">
+        <thead><tr>
+          <th data-sort="datetime">Date</th>
+          <th data-sort="type">Type</th>
+          <th data-sort="name">Name</th>
+          <th data-sort="symbol">Symbol</th>
+          <th data-sort="shares" class="num">Shares</th>
+          <th data-sort="price" class="num">Price</th>
+          <th data-sort="amount" class="num">Amount</th>
+         </tr></thead>
+<tbody></tbody>
+</table>
+</section>
+
+  </div>
+</details>
+
+<script src="engine.js"></script>
+<script src="dashboard.js"></script>
+<footer class="app-footer">
+  <span>Made with &lt;3 &middot; Free forever.</span>
+  <a href="#" id="footer-support-link">Support the project</a>
+</footer>
+</body>
+</html>
