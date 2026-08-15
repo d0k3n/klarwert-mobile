@@ -113,9 +113,26 @@ renderSpendingCharts(spending);
 renderCardRules(cardRules);
 }
 
+window.loadCSV = function () {
+  if (window.KlarwertNative && window.KlarwertNative.isNative) {
+    window.uploadCSV(null);
+  } else {
+    document.getElementById('csv-input').click();
+  }
+};
+
 window.uploadCSV = async function (input) {
 const status = document.getElementById("reload-status");
-const file = input.files && input.files[0];
+let file = input && input.files ? input.files[0] : null;
+if (!file && window.KlarwertNative && window.KlarwertNative.isNative) {
+  try {
+    const picked = await window.KlarwertNative.pickCSV();
+    if (picked) file = new File([picked.content], picked.name, { type: "text/csv" });
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`;
+    return;
+  }
+}
 if (!file) return;
 status.textContent = "Loading...";
 try {

@@ -17,7 +17,7 @@
     <span class="header-timestamp" id="header-timestamp"></span>
     <button id="support-btn" onclick="window.openSupport()">&#x2615; Support</button>
     <button id="feature-btn" onclick="window.openFeatureRequest()">Request a Feature</button>
-    <button id="load-btn" onclick="document.getElementById('csv-input').click()">
+    <button id="load-btn" onclick="window.loadCSV()">
       <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
         <polyline points="17 8 12 3 7 8"/>
@@ -25,7 +25,7 @@
       </svg>
       <span>Load CSV</span>
     </button>
-    <input id="csv-input" type="file" accept=".csv" style="display:none" onchange="window.uploadCSV(this)">
+    <input id="csv-input" type="file" accept=".csv,text/csv,text/plain" style="display:none" onchange="window.uploadCSV(this)">
     <span id="reload-status"></span>
   </div>
 </div>

@@ -3,6 +3,7 @@ import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 import { Preferences } from "@capacitor/preferences";
 import { Share } from "@capacitor/share";
 import { Browser } from "@capacitor/browser";
+import { FilePicker } from "@capawesome/capacitor-file-picker";
 
 import { parseCSV } from "./csv.ts";
 import {
@@ -406,6 +407,7 @@ declare global {
       isNative: boolean;
       shareText: (filename: string, text: string) => Promise<void>;
       openUrl: (url: string) => Promise<void>;
+      pickCSV: () => Promise<{ name: string; content: string } | null>;
     };
     fetch: typeof fetch;
   }
@@ -424,6 +426,26 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response
   return originalFetch(input, init);
 }) as typeof fetch;
 
+function base64ToText(b64: string): string {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+async function pickCSV(): Promise<{ name: string; content: string } | null> {
+  const result = await FilePicker.pickFiles({ types: ["*/*"], readData: true });
+  const file = result.files?.[0];
+  if (!file) return null;
+  if (typeof file.data === "string" && file.data.length > 0) {
+    return { name: file.name, content: base64ToText(file.data) };
+  }
+  if (file.blob) {
+    return { name: file.name, content: await file.blob.text() };
+  }
+  return null;
+}
+
 window.KlarwertNative = {
   isNative: native,
   shareText: async (filename: string, text: string) => {
@@ -433,6 +455,10 @@ window.KlarwertNative = {
   openUrl: async (url: string) => {
     if (!native) return;
     await Browser.open({ url });
+  },
+  pickCSV: async () => {
+    if (!native) return null;
+    return pickCSV();
   },
 };
 
