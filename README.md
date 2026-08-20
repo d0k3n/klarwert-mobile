@@ -94,6 +94,16 @@ npx serve web
 In the browser the same code runs with localStorage instead of the native
 filesystem, which is enough to exercise the UI before deploying to a device.
 
+## CI/CD and GitHub Releases
+
+GitHub Actions runs the tests and web build for pushes and pull requests to
+`main`. Stable version tags such as `v1.1.0` trigger a signed Android build and
+publish the APK and its SHA-256 checksum to GitHub Releases.
+
+Production signing requires four repository secrets and a securely backed-up
+Android keystore. See [docs/RELEASING.md](docs/RELEASING.md) for the one-time
+setup and release procedure.
+
 ## Notes
 
 - Debug builds are signed with the debug keystore and install directly. For

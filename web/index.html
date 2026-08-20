@@ -4,14 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Klarwert</title>
+<link rel="icon" type="image/png" href="assets/klarwert-logo.png">
 <link rel="stylesheet" href="style.css">
 <script src="vendor/chart.umd.min.js"></script>
 </head>
 <body>
 <div class="page-header">
   <div class="header-left">
-    <h1>Klarwert</h1>
-    <span class="header-subtitle">Portfolio Analyzer</span>
+    <img class="app-logo" src="assets/klarwert-logo.png" alt="" width="40" height="40">
+    <div class="app-brand">
+      <h1>Klarwert</h1>
+      <span class="header-subtitle">Portfolio Analyzer</span>
+    </div>
   </div>
   <div class="header-right">
     <span class="header-timestamp" id="header-timestamp"></span>
@@ -60,14 +64,31 @@
 </section>
 
 <section>
-  <h2>Monthly Realized P&amp;L</h2>
-  <div class="week-nav">
-    <button id="month-prev" onclick="window.monthlyNav(-1)">&laquo; Prev</button>
-    <span id="month-label"></span>
-    <button id="month-next" onclick="window.monthlyNav(1)">Next &raquo;</button>
+  <h2 id="monthly-pl-heading">Monthly Realized P&amp;L</h2>
+  <div class="week-nav month-nav" aria-label="Monthly P&amp;L navigation">
+    <button id="month-prev" type="button" aria-label="Previous month" onclick="window.monthlyNav(-1)">&laquo; Prev</button>
+    <span id="month-label" aria-live="polite"></span>
+    <button id="month-next" type="button" aria-label="Next month" onclick="window.monthlyNav(1)">Next &raquo;</button>
   </div>
-  <p id="month-total"></p>
-  <canvas id="monthly-pl-chart"></canvas>
+  <p id="month-total" aria-live="polite"></p>
+  <div id="monthly-pl-heatmap" class="pl-heatmap" role="grid" aria-labelledby="monthly-pl-heading month-label" aria-describedby="month-total">
+    <div class="pl-heatmap-weekdays" role="row" aria-hidden="true">
+      <span role="columnheader">Mon</span><span role="columnheader">Tue</span>
+      <span role="columnheader">Wed</span><span role="columnheader">Thu</span>
+      <span role="columnheader">Fri</span><span role="columnheader">Sat</span>
+      <span role="columnheader">Sun</span>
+    </div>
+    <div id="monthly-pl-grid" class="pl-heatmap-grid" role="rowgroup"></div>
+    <div class="pl-heatmap-legend" aria-hidden="true">
+      <span>No activity</span>
+      <span class="pl-legend-swatch heat-positive-1"></span>
+      <span class="pl-legend-swatch heat-positive-3"></span>
+      <span class="pl-legend-swatch heat-negative-1"></span>
+      <span class="pl-legend-swatch heat-negative-3"></span>
+      <span>Profit / loss</span>
+    </div>
+  </div>
+  <p id="monthly-pl-status" class="sr-only" aria-live="polite"></p>
 </section>
 
 <section>
@@ -341,6 +362,7 @@
 <section>
 <h2>Recent Transactions</h2>
 <input type="text" id="tx-filter" placeholder="Filter by symbol or name...">
+<div class="table-wrapper">
 <table id="transactions-table">
         <thead><tr>
           <th data-sort="datetime">Date</th>
@@ -353,6 +375,7 @@
          </tr></thead>
 <tbody></tbody>
 </table>
+</div>
 </section>
 
   </div>

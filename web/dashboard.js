@@ -14,7 +14,6 @@ return r.json();
 }
 
 let cashFlowChart = null;
-let monthlyPLChart = null;
 let weeklyPLChart = null;
 let plEvolutionChart = null;
 let allocationChart = null;
@@ -721,69 +720,170 @@ function formatMonthLabel(month) {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+function monthlyHeatLevel(pl, maxAbs) {
+  if (pl == null) return "no-data";
+  if (pl === 0 || maxAbs === 0) return "neutral";
+  const level = Math.min(4, Math.max(1, Math.ceil(Math.abs(pl) / maxAbs * 4)));
+  return `${pl > 0 ? "heat-positive" : "heat-negative"}-${level}`;
+}
+
+function formatPLValue(value) {
+  return `\u20AC${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatMonthlyDayLabel(day) {
+  const date = parseDate(day.date);
+  const dateLabel = date.toLocaleDateString(undefined, {
+    weekday: "long", month: "long", day: "numeric", year: "numeric",
+  });
+  return day.pl == null
+    ? `${dateLabel}: No activity`
+    : `${dateLabel}: Realized P&L ${formatPLValue(day.pl)}`;
+}
+
+function clearMonthlyDayTooltip() {
+  const grid = document.getElementById("monthly-pl-grid");
+  if (!grid) return;
+  grid.querySelectorAll(".pl-day.is-selected").forEach(day => {
+    day.classList.remove("is-selected");
+    day.removeAttribute("aria-describedby");
+  });
+  grid.querySelectorAll(".pl-day-tooltip").forEach(tooltip => tooltip.remove());
+}
+
+function handleMonthlyGridClick(event) {
+  const button = event.target.closest(".pl-day");
+  if (!button) return;
+  const wasSelected = button.classList.contains("is-selected");
+  clearMonthlyDayTooltip();
+  if (wasSelected) return;
+
+  const tooltip = document.createElement("span");
+  tooltip.className = "pl-day-tooltip";
+  tooltip.id = `monthly-pl-tooltip-${button.dataset.date}`;
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.textContent = button.dataset.pl == null
+    ? "No activity"
+    : formatPLValue(Number(button.dataset.pl));
+  button.classList.add("is-selected");
+  button.setAttribute("aria-describedby", tooltip.id);
+  button.appendChild(tooltip);
+
+  const statusEl = document.getElementById("monthly-pl-status");
+  if (statusEl) statusEl.textContent = button.getAttribute("aria-label");
+}
+
+function handleMonthlyOutsideClick(event) {
+  if (!event.target.closest("#monthly-pl-grid")) clearMonthlyDayTooltip();
+}
+
+function moveMonthlyFocus(cellIndex, delta) {
+  const grid = document.getElementById("monthly-pl-grid");
+  if (!grid) return;
+  const target = grid.querySelector(`[data-cell-index="${cellIndex + delta}"]`);
+  if (!target) return;
+  grid.querySelectorAll(".pl-day").forEach(day => { day.tabIndex = -1; });
+  target.tabIndex = 0;
+  target.focus();
+}
+
+function handleMonthlyGridKeydown(event) {
+  const day = event.target.closest(".pl-day");
+  if (!day) return;
+  if (event.key === "Escape") {
+    clearMonthlyDayTooltip();
+    return;
+  }
+  const cellIndex = Number(day.dataset.cellIndex);
+  let delta = 0;
+  if (event.key === "ArrowLeft") delta = -1;
+  if (event.key === "ArrowRight") delta = 1;
+  if (event.key === "ArrowUp") delta = -7;
+  if (event.key === "ArrowDown") delta = 7;
+  if (event.key === "Home") delta = -(cellIndex % 7);
+  if (event.key === "End") delta = 6 - (cellIndex % 7);
+  if (delta) {
+    event.preventDefault();
+    moveMonthlyFocus(cellIndex, delta);
+  }
+}
+
 function drawMonthlyPL() {
-  const ctx = document.getElementById("monthly-pl-chart").getContext("2d");
   const labelEl = document.getElementById("month-label");
   const totalEl = document.getElementById("month-total");
   const prevBtn = document.getElementById("month-prev");
   const nextBtn = document.getElementById("month-next");
-  if (monthlyPLChart) monthlyPLChart.destroy();
-  monthlyPLChart = null;
+  const grid = document.getElementById("monthly-pl-grid");
+  const statusEl = document.getElementById("monthly-pl-status");
+  if (grid && !grid.dataset.keyboardReady) {
+    grid.addEventListener("keydown", handleMonthlyGridKeydown);
+    grid.addEventListener("click", handleMonthlyGridClick);
+    document.addEventListener("click", handleMonthlyOutsideClick);
+    grid.dataset.keyboardReady = "true";
+  }
   if (!monthlyMonths.length) {
     if (labelEl) labelEl.textContent = "No P/L data yet";
     if (totalEl) totalEl.textContent = "";
+    if (grid) grid.replaceChildren();
+    if (statusEl) statusEl.textContent = "No realized P/L data yet.";
     if (prevBtn) prevBtn.disabled = true;
     if (nextBtn) nextBtn.disabled = true;
     return;
   }
   const month = monthlyMonths[monthlyIndex];
-  const labels = month.days.map(d => parseDate(d.date).toLocaleDateString(undefined, { weekday: "short", day: "numeric" }));
-  const values = month.days.map(d => d.pl);
+  const maxAbs = Math.max(0, ...month.days.map(day => Math.abs(day.pl ?? 0)));
   if (labelEl) labelEl.textContent = formatMonthLabel(month);
   if (totalEl) {
     const t = month.total;
-    totalEl.textContent = `Month P&L: \u20AC${t.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    totalEl.textContent = `Month P&L: ${formatPLValue(t)}`;
     totalEl.className = t >= 0 ? "positive" : "negative";
   }
   if (prevBtn) prevBtn.disabled = monthlyIndex === 0;
   if (nextBtn) nextBtn.disabled = monthlyIndex >= monthlyMonths.length - 1;
+  if (!grid) return;
 
-  monthlyPLChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        label: "Realized P&L",
-        data: values,
-        backgroundColor: values.map(v => v == null ? "#30363d" : (v >= 0 ? CHART_GREEN : CHART_RED)),
-      }],
-    },
-    options: {
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: "#21262d", titleColor: "#e6edf3", bodyColor: "#e6edf3",
-          callbacks: {
-            title: (items) => {
-              const i = items[0].dataIndex;
-              return month.days[i].date;
-            },
-            label: (c) => {
-              const d = month.days[c.dataIndex];
-              return d.pl == null
-                ? "No activity"
-                : `\u20AC${d.pl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: { ticks: { color: "#8b949e" }, grid: { color: "#21262d" } },
-        y: { beginAtZero: true, ticks: { color: "#8b949e" }, grid: { color: "#21262d" } },
-      },
-    },
-  });
+  const firstDay = parseDate(month.days[0].date);
+  const leadingCells = (firstDay.getDay() + 6) % 7;
+  const rowCount = Math.ceil((leadingCells + month.days.length) / 7);
+  grid.replaceChildren();
+  let dayIndex = 0;
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    const row = document.createElement("div");
+    row.className = "pl-heatmap-row";
+    row.setAttribute("role", "row");
+    for (let columnIndex = 0; columnIndex < 7; columnIndex++) {
+      const cellIndex = rowIndex * 7 + columnIndex;
+      const isDay = cellIndex >= leadingCells && dayIndex < month.days.length;
+      if (!isDay) {
+        const empty = document.createElement("span");
+        empty.className = "pl-day-empty";
+        empty.setAttribute("role", "gridcell");
+        empty.setAttribute("aria-hidden", "true");
+        row.appendChild(empty);
+        continue;
+      }
+      const day = month.days[dayIndex++];
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `pl-day ${monthlyHeatLevel(day.pl, maxAbs)}`;
+      button.setAttribute("role", "gridcell");
+      button.setAttribute("aria-label", formatMonthlyDayLabel(day));
+      button.title = formatMonthlyDayLabel(day);
+      button.dataset.cellIndex = String(cellIndex);
+      button.dataset.date = day.date;
+      if (day.pl != null) button.dataset.pl = String(day.pl);
+      button.tabIndex = dayIndex === 1 ? 0 : -1;
+      button.textContent = String(parseDate(day.date).getDate());
+      if (columnIndex < 2) button.classList.add("tooltip-align-start");
+      if (columnIndex > 4) button.classList.add("tooltip-align-end");
+      row.appendChild(button);
+    }
+    grid.appendChild(row);
+  }
+  if (statusEl) statusEl.textContent = `${formatMonthLabel(month)} calendar loaded.`;
 }
 
 window.monthlyNav = function (delta) {
@@ -1385,10 +1485,24 @@ function updateRefreshStatus() {
 })();
 
 function resizeAllCharts() {
-  [cashFlowChart, monthlyPLChart, weeklyPLChart, plEvolutionChart,
+  [cashFlowChart, weeklyPLChart, plEvolutionChart,
    allocationChart, dividendChart, incomeChart, spendingCatChart, spendingMonthChart]
     .forEach(c => { if (c) c.resize(); });
 }
+
+// Chart.js observes normal resizes, but some Capacitor WebViews only emit
+// orientationchange while rotating. Resize after the viewport has settled so
+// charts in every dashboard group use the new width and height.
+let chartResizeFrame = 0;
+function scheduleChartResize() {
+  if (chartResizeFrame) return;
+  chartResizeFrame = window.requestAnimationFrame(() => {
+    chartResizeFrame = 0;
+    resizeAllCharts();
+  });
+}
+window.addEventListener("resize", scheduleChartResize, { passive: true });
+window.addEventListener("orientationchange", scheduleChartResize, { passive: true });
 
 function saveDashGroups() {
   const state = {};
