@@ -84,7 +84,15 @@ jobs:
           npx cap sync android
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+        shell: bash
+        run: |
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          sdkmanager_path="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          if [[ -z "$sdk_root" || ! -x "$sdkmanager_path" ]]; then
+            echo "sdkmanager not found at $sdkmanager_path" >&2
+            exit 1
+          fi
+          "$sdkmanager_path" "platforms;android-36" "build-tools;35.0.0"
 
       - name: Apply Android release version
         run: node scripts/set-android-version.mjs "${{ steps.version.outputs.version }}"
@@ -103,19 +111,20 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           keystore="$RUNNER_TEMP/klarwert-release.jks"
           unsigned="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           output="dist/klarwert-mobile-$VERSION.apk"
           mkdir -p dist
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+          "$sdk_root/build-tools/35.0.0/apksigner" sign \
             --ks "$keystore" \
             --ks-key-alias "$KEY_ALIAS" \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEY_PASSWORD \
             --out "$output" \
             "$unsigned"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$output"
+          "$sdk_root/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$output"
           sha256sum "$output" > "$output.sha256"
           echo "path=$output" >> "$GITHUB_OUTPUT"
           echo "checksum=$output.sha256" >> "$GITHUB_OUTPUT"

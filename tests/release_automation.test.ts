@@ -33,4 +33,7 @@ test("CI and release workflows cover tests, signing and GitHub Releases", () => 
   assert.match(release, /apksigner" sign/);
   assert.match(release, /gh release create/);
   assert.match(release, /ANDROID_KEYSTORE_BASE64/);
+  assert.match(release, /ANDROID_SDK_ROOT:-\$\{ANDROID_HOME:-\}/);
+  assert.match(release, /cmdline-tools\/latest\/bin\/sdkmanager/);
+  assert.doesNotMatch(release, /run:\s*sdkmanager\s/);
 });
