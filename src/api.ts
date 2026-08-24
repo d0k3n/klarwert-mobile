@@ -17,6 +17,7 @@ import {
   uncategorized_vendors,
 } from "./engine.ts";
 import { compute_performance } from "./performance.ts";
+import { computeAnnualPLProjection } from "./pl_insights.ts";
 import { build_tax_report } from "./tax_report.ts";
 import { refresh_prices } from "./market.ts";
 import type { Row, EngineResult, CardRule } from "./types.ts";
@@ -309,6 +310,9 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
 
       case "GET daily_pl":
         return jsonResponse(computeData().daily_pl);
+
+      case "GET annual_pl_projection":
+        return jsonResponse(computeAnnualPLProjection(computeData().daily_pl));
 
       case "GET lot_matches":
         return jsonResponse(computeData().lot_matches);

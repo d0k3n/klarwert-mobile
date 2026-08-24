@@ -63,7 +63,7 @@ const TABLE_CONFIGS = {
 };
 
 async function loadAllData() {
-const [summary, valuedPositions, closedPositions, cashFlow, transactions, products, monthlyPl, dailyPl, derivativeExecutions, cardTransactions, lotMatches, perfData, income, spending, cardRules] = await Promise.all([
+const [summary, valuedPositions, closedPositions, cashFlow, transactions, products, monthlyPl, dailyPl, annualProjection, derivativeExecutions, cardTransactions, lotMatches, perfData, income, spending, cardRules] = await Promise.all([
 loadJSON(`${BASE}/api/summary`),
 loadJSON(`${BASE}/api/valued_positions`),
 loadJSON(`${BASE}/api/closed_positions`),
@@ -72,6 +72,7 @@ loadJSON(`${BASE}/api/transactions`),
 loadJSON(`${BASE}/api/products`),
 loadJSON(`${BASE}/api/monthly_pl`),
 loadJSON(`${BASE}/api/daily_pl`),
+loadJSON(`${BASE}/api/annual_pl_projection`),
 loadJSON(`${BASE}/api/derivative_executions`),
 loadJSON(`${BASE}/api/card_transactions`),
 loadJSON(`${BASE}/api/lot_matches`),
@@ -99,6 +100,7 @@ renderCashFlowChart(cashFlow);
 renderTransactions(transactions);
 renderMonthlyPLChart(dailyPl);
 renderWeeklyPLChart(dailyPl);
+renderAnnualPLProjection(annualProjection);
 renderPLEvolutionChart(monthlyPl);
 renderTable("product-results-table", products, TABLE_CONFIGS['product-results-table']);
 renderAllocationChart(openPositions);
@@ -734,6 +736,23 @@ function formatPLValue(value) {
   })}`;
 }
 
+function periodPLStats(days) {
+  const active = days.filter(day => day.pl != null);
+  const total = active.reduce((sum, day) => sum + day.pl, 0);
+  return {
+    total,
+    activeDays: active.length,
+    averageActiveDay: active.length ? total / active.length : 0,
+    positiveRate: active.length ? active.filter(day => day.pl > 0).length / active.length * 100 : 0,
+  };
+}
+
+function formatPeriodSummary(label, days) {
+  const stats = periodPLStats(days);
+  const dayLabel = stats.activeDays === 1 ? "active day" : "active days";
+  return `${label} P&L: ${formatPLValue(stats.total)} · Avg/active day: ${formatPLValue(stats.averageActiveDay)} · ${stats.activeDays} ${dayLabel} · ${stats.positiveRate.toFixed(0)}% positive`;
+}
+
 function formatMonthlyDayLabel(day) {
   const date = parseDate(day.date);
   const dateLabel = date.toLocaleDateString(undefined, {
@@ -837,9 +856,8 @@ function drawMonthlyPL() {
   const maxAbs = Math.max(0, ...month.days.map(day => Math.abs(day.pl ?? 0)));
   if (labelEl) labelEl.textContent = formatMonthLabel(month);
   if (totalEl) {
-    const t = month.total;
-    totalEl.textContent = `Month P&L: ${formatPLValue(t)}`;
-    totalEl.className = t >= 0 ? "positive" : "negative";
+    totalEl.textContent = formatPeriodSummary("Month", month.days);
+    totalEl.className = month.total >= 0 ? "positive" : "negative";
   }
   if (prevBtn) prevBtn.disabled = monthlyIndex === 0;
   if (nextBtn) nextBtn.disabled = monthlyIndex >= monthlyMonths.length - 1;
@@ -937,6 +955,50 @@ function renderPLEvolutionChart(monthly) {
   });
 }
 
+function projectionCard(label, value, className = "") {
+  const card = document.createElement("article");
+  card.className = "card";
+  const labelEl = document.createElement("div");
+  labelEl.className = "label";
+  labelEl.textContent = label;
+  const valueEl = document.createElement("div");
+  valueEl.className = `value ${className}`.trim();
+  valueEl.textContent = value;
+  card.append(labelEl, valueEl);
+  return card;
+}
+
+function plClass(value) {
+  return value >= 0 ? "positive" : "negative";
+}
+
+function renderAnnualPLProjection(projection) {
+  const cards = document.getElementById("annual-projection-cards");
+  const method = document.getElementById("annual-projection-method");
+  if (!cards || !method) return;
+  cards.replaceChildren();
+
+  if (!projection) {
+    method.textContent = "No realized P&L data is available for the current year yet.";
+    return;
+  }
+
+  const asOf = parseDate(projection.as_of).toLocaleDateString(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+  });
+  method.textContent = `Projection for ${projection.year} based on the average across ${projection.elapsed_days} elapsed calendar days, as of ${asOf}.`;
+  cards.append(
+    projectionCard("YTD realized P&L", formatPLValue(projection.ytd_pl), plClass(projection.ytd_pl)),
+    projectionCard("Projected Dec 31", formatPLValue(projection.projected_pl), plClass(projection.projected_pl)),
+    projectionCard("Remaining projection", formatPLValue(projection.projected_remaining_pl), plClass(projection.projected_remaining_pl)),
+    projectionCard("Avg / calendar day", formatPLValue(projection.average_calendar_day), plClass(projection.average_calendar_day)),
+    projectionCard("Avg / active day", formatPLValue(projection.average_active_day), plClass(projection.average_active_day)),
+    projectionCard("Positive active days", `${projection.positive_day_rate.toFixed(1)}% (${projection.positive_days}/${projection.active_days})`),
+    projectionCard("Best day", `${formatPLValue(projection.best_day.realized_pl)} · ${parseDate(projection.best_day.date).toLocaleDateString()}`, plClass(projection.best_day.realized_pl)),
+    projectionCard("Worst day", `${formatPLValue(projection.worst_day.realized_pl)} · ${parseDate(projection.worst_day.date).toLocaleDateString()}`, plClass(projection.worst_day.realized_pl)),
+  );
+}
+
 let weeklyWeeks = [];
 let weeklyIndex = 0;
 
@@ -1015,9 +1077,8 @@ function drawWeeklyPL() {
   const values = week.days.map(d => d.pl);
   if (labelEl) labelEl.textContent = formatWeekLabel(week);
   if (totalEl) {
-    const t = week.total;
-    totalEl.textContent = `Week P&L: \u20AC${t.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    totalEl.className = t >= 0 ? "positive" : "negative";
+    totalEl.textContent = formatPeriodSummary("Week", week.days);
+    totalEl.className = week.total >= 0 ? "positive" : "negative";
   }
   if (prevBtn) prevBtn.disabled = weeklyIndex === 0;
   if (nextBtn) nextBtn.disabled = weeklyIndex >= weeklyWeeks.length - 1;

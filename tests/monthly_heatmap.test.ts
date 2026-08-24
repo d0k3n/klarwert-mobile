@@ -26,3 +26,12 @@ test("monthly P/L heatmap stays a seven-column responsive grid", () => {
   assert.match(css, /\.pl-day:focus-visible\s*\{[\s\S]*?outline:/);
   assert.match(css, /\.pl-day-tooltip\s*\{[\s\S]*?position:\s*absolute/);
 });
+
+test("weekly and monthly P/L show active-day averages and an annual projection", () => {
+  assert.match(html, /id="annual-pl-projection"/);
+  assert.match(html, /id="annual-projection-cards"/);
+  assert.match(dashboard, /function periodPLStats\(days\)/);
+  assert.match(dashboard, /Avg\/active day:/);
+  assert.match(dashboard, /renderAnnualPLProjection\(annualProjection\)/);
+  assert.match(dashboard, /elapsed calendar days/);
+});
