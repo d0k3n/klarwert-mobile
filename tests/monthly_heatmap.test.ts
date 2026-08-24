@@ -33,5 +33,11 @@ test("weekly and monthly P/L show active-day averages and an annual projection",
   assert.match(dashboard, /function periodPLStats\(days\)/);
   assert.match(dashboard, /Avg\/active day:/);
   assert.match(dashboard, /renderAnnualPLProjection\(annualProjection\)/);
-  assert.match(dashboard, /elapsed calendar days/);
+  assert.match(dashboard, /active days\/week/);
+  assert.match(html, /id="projection-settings-btn"/);
+  assert.match(html, /id="config-dialog"/);
+  assert.match(dashboard, /window\.exportConfig/);
+  assert.match(dashboard, /window\.importConfig/);
+  assert.match(dashboard, /KlarwertNative\.shareFile/);
+  assert.match(dashboard, /KlarwertNative\.pickConfig/);
 });

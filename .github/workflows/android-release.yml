@@ -82,6 +82,7 @@ jobs:
         run: |
           npx cap add android
           npx cap sync android
+          node scripts/configure-android-backup.mjs
 
       - name: Install Android SDK packages
         shell: bash

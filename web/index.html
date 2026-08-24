@@ -103,10 +103,33 @@
 </section>
 
 <section id="annual-pl-projection">
-  <h2>Annual P&amp;L Projection</h2>
+  <div class="projection-heading">
+    <h2>Annual P&amp;L Projection</h2>
+    <button id="projection-settings-btn" class="icon-button" type="button" aria-label="Projection and backup settings" title="Projection and backup settings" onclick="window.openConfigSettings()">&#9881;</button>
+  </div>
   <p id="annual-projection-method" class="metric-note"></p>
   <div id="annual-projection-cards" class="cards projection-cards"></div>
 </section>
+
+<dialog id="config-dialog" aria-labelledby="config-dialog-title">
+  <form method="dialog" class="config-dialog-form">
+    <div class="config-dialog-heading">
+      <h2 id="config-dialog-title">Projection &amp; Backup</h2>
+      <button type="submit" class="icon-button" aria-label="Close settings">&times;</button>
+    </div>
+    <label for="projection-active-days">Expected active trading days per week</label>
+    <input id="projection-active-days" type="number" min="1" max="7" step="1" inputmode="numeric" required>
+    <p class="metric-note">The year-end projection uses your average P/L per active day and this expected weekly pace.</p>
+    <div class="config-actions">
+      <button type="button" class="primary-action" onclick="window.saveConfigSettings()">Save</button>
+      <button type="button" onclick="window.exportConfig()">Export configuration</button>
+      <button type="button" onclick="window.importConfig()">Import configuration</button>
+    </div>
+    <p class="metric-note">The configuration file contains projection preferences and card category rules only.</p>
+    <p id="config-status" class="config-status" aria-live="polite"></p>
+  </form>
+</dialog>
+<input id="config-input" type="file" accept=".json,application/json" hidden onchange="window.handleConfigFile(this)">
 
 <section>
   <h2>Realized P&amp;L Over Time</h2>

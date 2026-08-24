@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { androidVersionCode, updateAndroidBuildGradle } from "../scripts/set-android-version.mjs";
+import {
+  LEGACY_BACKUP_RULES,
+  MODERN_BACKUP_RULES,
+  updateAndroidManifestForBackup,
+} from "../scripts/configure-android-backup.mjs";
 
 const repoRoot = resolve(process.cwd());
 
@@ -36,4 +41,15 @@ test("CI and release workflows cover tests, signing and GitHub Releases", () => 
   assert.match(release, /ANDROID_SDK_ROOT:-\$\{ANDROID_HOME:-\}/);
   assert.match(release, /cmdline-tools\/latest\/bin\/sdkmanager/);
   assert.doesNotMatch(release, /run:\s*sdkmanager\s/);
+  assert.match(release, /node scripts\/configure-android-backup\.mjs/);
+});
+
+test("Android backup includes only the portable user configuration", () => {
+  const manifest = updateAndroidManifestForBackup('<application android:allowBackup="true">');
+  assert.match(manifest, /android:fullBackupContent="@xml\/backup_rules"/);
+  assert.match(manifest, /android:dataExtractionRules="@xml\/data_extraction_rules"/);
+  assert.match(LEGACY_BACKUP_RULES, /path="user_config\.json"/);
+  assert.match(MODERN_BACKUP_RULES, /<cloud-backup>[\s\S]*path="user_config\.json"/);
+  assert.match(MODERN_BACKUP_RULES, /<device-transfer>[\s\S]*path="user_config\.json"/);
+  assert.doesNotMatch(`${LEGACY_BACKUP_RULES}\n${MODERN_BACKUP_RULES}`, /transactions|finnhub|api.?key/i);
 });

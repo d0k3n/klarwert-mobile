@@ -18,6 +18,14 @@ import {
 } from "./engine.ts";
 import { compute_performance } from "./performance.ts";
 import { computeAnnualPLProjection } from "./pl_insights.ts";
+import {
+  DEFAULT_USER_SETTINGS,
+  makeUserConfig,
+  parseUserConfig,
+  validateCardRules,
+  validateUserSettings,
+  type UserSettings,
+} from "./user_config.ts";
 import { build_tax_report } from "./tax_report.ts";
 import { refresh_prices } from "./market.ts";
 import type { Row, EngineResult, CardRule } from "./types.ts";
@@ -34,6 +42,7 @@ let cacheResult: EngineResult | null = null;
 let prices: Record<string, { price: number; source: string }> = {};
 let tickers: Record<string, string> = {};
 let cardRules: CardRule[] = [];
+let userSettings: UserSettings = { ...DEFAULT_USER_SETTINGS };
 let knockedIds = new Set<string>();
 let apiKey = "";
 
@@ -127,6 +136,10 @@ async function loadApiKey(): Promise<void> {
   apiKey = (await prefGet("finnhub_api_key")) ?? "";
 }
 
+async function saveUserConfig(): Promise<void> {
+  await fsWrite("user_config.json", JSON.stringify(makeUserConfig(userSettings, cardRules)));
+}
+
 async function initEngine(): Promise<void> {
   const csvText = await fsRead("transactions.csv");
   if (csvText !== null) {
@@ -139,8 +152,25 @@ async function initEngine(): Promise<void> {
   }
   prices = normalizePrices(parseJSON(await fsRead("prices.json")));
   tickers = parseJSON(await fsRead("tickers.json")) ?? {};
-  const rulesData = parseJSON(await fsRead("card_rules.json"));
-  cardRules = Array.isArray(rulesData?.rules) ? rulesData.rules : [];
+  const storedConfig = parseJSON(await fsRead("user_config.json"));
+  if (storedConfig !== null) {
+    try {
+      const config = parseUserConfig(storedConfig);
+      userSettings = config.settings;
+      cardRules = config.card_rules;
+    } catch (e: any) {
+      console.warn(`Ignoring invalid stored configuration: ${e?.message ?? e}`);
+    }
+  } else {
+    const rulesData = parseJSON(await fsRead("card_rules.json"));
+    try {
+      cardRules = validateCardRules(Array.isArray(rulesData?.rules) ? rulesData.rules : []);
+    } catch (e: any) {
+      console.warn(`Ignoring invalid legacy card rules: ${e?.message ?? e}`);
+      cardRules = [];
+    }
+    await saveUserConfig();
+  }
   const kd = parseJSON(await fsRead("knocked_down.json"));
   knockedIds = new Set(Array.isArray(kd?.ids) ? kd.ids : []);
   await loadApiKey();
@@ -312,7 +342,31 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         return jsonResponse(computeData().daily_pl);
 
       case "GET annual_pl_projection":
-        return jsonResponse(computeAnnualPLProjection(computeData().daily_pl));
+        return jsonResponse(computeAnnualPLProjection(
+          computeData().daily_pl,
+          new Date(),
+          userSettings.projection_active_days_per_week,
+        ));
+
+      case "GET settings":
+        return jsonResponse(userSettings);
+
+      case "POST settings": {
+        userSettings = validateUserSettings(await readJsonBody(body));
+        await saveUserConfig();
+        return jsonResponse({ ok: true, settings: userSettings });
+      }
+
+      case "GET config_export":
+        return jsonResponse(makeUserConfig(userSettings, cardRules));
+
+      case "POST config_import": {
+        const config = parseUserConfig(await readJsonBody(body));
+        userSettings = config.settings;
+        cardRules = config.card_rules;
+        await saveUserConfig();
+        return jsonResponse({ ok: true, settings: userSettings, card_rules: cardRules });
+      }
 
       case "GET lot_matches":
         return jsonResponse(computeData().lot_matches);
@@ -370,9 +424,11 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const category = String(b.category ?? "").trim();
         if (!pattern || !category) return jsonResponse({ ok: false, error: "pattern and category are required" }, 400);
         const norm = normalize(pattern);
-        cardRules = cardRules.filter((r) => normalize(r?.pattern) !== norm);
-        cardRules.push({ pattern, category });
-        await fsWrite("card_rules.json", JSON.stringify({ rules: cardRules }));
+        cardRules = validateCardRules([
+          ...cardRules.filter((r) => normalize(r?.pattern) !== norm),
+          { pattern, category },
+        ]);
+        await saveUserConfig();
         return jsonResponse({ ok: true, rules: cardRules });
       }
 
@@ -382,7 +438,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         if (!pattern) return jsonResponse({ ok: false, error: "pattern is required" }, 400);
         const norm = normalize(pattern);
         cardRules = cardRules.filter((r) => normalize(r?.pattern) !== norm);
-        await fsWrite("card_rules.json", JSON.stringify({ rules: cardRules }));
+        await saveUserConfig();
         return jsonResponse({ ok: true, rules: cardRules });
       }
 
@@ -410,8 +466,10 @@ declare global {
     KlarwertNative?: {
       isNative: boolean;
       shareText: (filename: string, text: string) => Promise<void>;
+      shareFile: (filename: string, text: string) => Promise<void>;
       openUrl: (url: string) => Promise<void>;
       pickCSV: () => Promise<{ name: string; content: string } | null>;
+      pickConfig: () => Promise<{ name: string; content: string } | null>;
     };
     fetch: typeof fetch;
   }
@@ -437,7 +495,7 @@ function base64ToText(b64: string): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-async function pickCSV(): Promise<{ name: string; content: string } | null> {
+async function pickTextFile(): Promise<{ name: string; content: string } | null> {
   const result = await FilePicker.pickFiles({ types: ["*/*"], readData: true });
   const file = result.files?.[0];
   if (!file) return null;
@@ -456,13 +514,23 @@ window.KlarwertNative = {
     if (!native) return;
     await Share.share({ title: filename, text, dialogTitle: filename });
   },
+  shareFile: async (filename: string, text: string) => {
+    if (!native) return;
+    await Filesystem.writeFile({ path: filename, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+    const file = await Filesystem.getUri({ path: filename, directory: Directory.Cache });
+    await Share.share({ title: filename, files: [file.uri], dialogTitle: filename });
+  },
   openUrl: async (url: string) => {
     if (!native) return;
     await Browser.open({ url });
   },
   pickCSV: async () => {
     if (!native) return null;
-    return pickCSV();
+    return pickTextFile();
+  },
+  pickConfig: async () => {
+    if (!native) return null;
+    return pickTextFile();
   },
 };
 

@@ -16,6 +16,9 @@ export interface AnnualPLProjection {
   positive_day_rate: number;
   elapsed_days: number;
   days_in_year: number;
+  remaining_days: number;
+  active_days_per_week: number;
+  projected_future_active_days: number;
   best_day: DailyPL;
   worst_day: DailyPL;
 }
@@ -40,7 +43,11 @@ function daysBetweenInclusive(start: string, end: string): number {
 export function computeAnnualPLProjection(
   daily: DailyPL[],
   asOf: Date = new Date(),
+  activeDaysPerWeek = 3,
 ): AnnualPLProjection | null {
+  if (!Number.isInteger(activeDaysPerWeek) || activeDaysPerWeek < 1 || activeDaysPerWeek > 7) {
+    throw new Error("Active days per week must be an integer from 1 to 7");
+  }
   const asOfKey = dateKey(asOf);
   const year = asOf.getFullYear();
   const yearPrefix = `${year}-`;
@@ -54,25 +61,32 @@ export function computeAnnualPLProjection(
   const endOfYear = `${year}-12-31`;
   const elapsedDays = daysBetweenInclusive(startOfYear, asOfKey);
   const daysInYear = daysBetweenInclusive(startOfYear, endOfYear);
+  const remainingDays = daysInYear - elapsedDays;
   const ytdPL = entries.reduce((sum, entry) => sum + entry.realized_pl, 0);
   const positiveDays = entries.filter((entry) => entry.realized_pl > 0).length;
   const bestDay = entries.reduce((best, entry) => entry.realized_pl > best.realized_pl ? entry : best);
   const worstDay = entries.reduce((worst, entry) => entry.realized_pl < worst.realized_pl ? entry : worst);
-  const projectedPL = ytdPL / elapsedDays * daysInYear;
+  const averageActiveDay = ytdPL / entries.length;
+  const projectedFutureActiveDays = remainingDays / 7 * activeDaysPerWeek;
+  const projectedRemainingPL = averageActiveDay * projectedFutureActiveDays;
+  const projectedPL = ytdPL + projectedRemainingPL;
 
   return {
     year,
     as_of: asOfKey,
     ytd_pl: roundCurrency(ytdPL),
     projected_pl: roundCurrency(projectedPL),
-    projected_remaining_pl: roundCurrency(projectedPL - ytdPL),
+    projected_remaining_pl: roundCurrency(projectedRemainingPL),
     average_calendar_day: roundCurrency(ytdPL / elapsedDays),
-    average_active_day: roundCurrency(ytdPL / entries.length),
+    average_active_day: roundCurrency(averageActiveDay),
     active_days: entries.length,
     positive_days: positiveDays,
     positive_day_rate: Math.round(positiveDays / entries.length * 1000) / 10,
     elapsed_days: elapsedDays,
     days_in_year: daysInYear,
+    remaining_days: remainingDays,
+    active_days_per_week: activeDaysPerWeek,
+    projected_future_active_days: Math.round(projectedFutureActiveDays * 10) / 10,
     best_day: { ...bestDay, realized_pl: roundCurrency(bestDay.realized_pl) },
     worst_day: { ...worstDay, realized_pl: roundCurrency(worstDay.realized_pl) },
   };

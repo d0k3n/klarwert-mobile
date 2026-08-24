@@ -21,6 +21,7 @@ let dividendChart = null;
 let incomeChart = null;
 let spendingCatChart = null;
 let spendingMonthChart = null;
+let currentUserSettings = { projection_active_days_per_week: 3 };
 
 const TABLE_CONFIGS = {
   'open-positions-table': {
@@ -63,7 +64,7 @@ const TABLE_CONFIGS = {
 };
 
 async function loadAllData() {
-const [summary, valuedPositions, closedPositions, cashFlow, transactions, products, monthlyPl, dailyPl, annualProjection, derivativeExecutions, cardTransactions, lotMatches, perfData, income, spending, cardRules] = await Promise.all([
+const [summary, valuedPositions, closedPositions, cashFlow, transactions, products, monthlyPl, dailyPl, annualProjection, settings, derivativeExecutions, cardTransactions, lotMatches, perfData, income, spending, cardRules] = await Promise.all([
 loadJSON(`${BASE}/api/summary`),
 loadJSON(`${BASE}/api/valued_positions`),
 loadJSON(`${BASE}/api/closed_positions`),
@@ -73,6 +74,7 @@ loadJSON(`${BASE}/api/products`),
 loadJSON(`${BASE}/api/monthly_pl`),
 loadJSON(`${BASE}/api/daily_pl`),
 loadJSON(`${BASE}/api/annual_pl_projection`),
+loadJSON(`${BASE}/api/settings`),
 loadJSON(`${BASE}/api/derivative_executions`),
 loadJSON(`${BASE}/api/card_transactions`),
 loadJSON(`${BASE}/api/lot_matches`),
@@ -81,6 +83,8 @@ loadJSON(`${BASE}/api/income`),
 loadJSON(`${BASE}/api/spending`),
 loadJSON(`${BASE}/api/card_rules`),
 ]);
+
+currentUserSettings = settings || currentUserSettings;
 
 const empty = !summary || Object.keys(summary).length === 0;
 document.getElementById("empty-state").style.display = empty ? "block" : "none";
@@ -986,18 +990,129 @@ function renderAnnualPLProjection(projection) {
   const asOf = parseDate(projection.as_of).toLocaleDateString(undefined, {
     month: "short", day: "numeric", year: "numeric",
   });
-  method.textContent = `Projection for ${projection.year} based on the average across ${projection.elapsed_days} elapsed calendar days, as of ${asOf}.`;
+  method.textContent = `Projection for ${projection.year} based on ${projection.active_days} active days so far and an expected pace of ${projection.active_days_per_week} active days/week (${projection.projected_future_active_days} projected active days remaining), as of ${asOf}.`;
   cards.append(
     projectionCard("YTD realized P&L", formatPLValue(projection.ytd_pl), plClass(projection.ytd_pl)),
     projectionCard("Projected Dec 31", formatPLValue(projection.projected_pl), plClass(projection.projected_pl)),
     projectionCard("Remaining projection", formatPLValue(projection.projected_remaining_pl), plClass(projection.projected_remaining_pl)),
-    projectionCard("Avg / calendar day", formatPLValue(projection.average_calendar_day), plClass(projection.average_calendar_day)),
     projectionCard("Avg / active day", formatPLValue(projection.average_active_day), plClass(projection.average_active_day)),
+    projectionCard("Future active days", projection.projected_future_active_days.toLocaleString(undefined, { maximumFractionDigits: 1 })),
     projectionCard("Positive active days", `${projection.positive_day_rate.toFixed(1)}% (${projection.positive_days}/${projection.active_days})`),
     projectionCard("Best day", `${formatPLValue(projection.best_day.realized_pl)} · ${parseDate(projection.best_day.date).toLocaleDateString()}`, plClass(projection.best_day.realized_pl)),
     projectionCard("Worst day", `${formatPLValue(projection.worst_day.realized_pl)} · ${parseDate(projection.worst_day.date).toLocaleDateString()}`, plClass(projection.worst_day.realized_pl)),
   );
 }
+
+function setConfigStatus(message, isError = false) {
+  const status = document.getElementById("config-status");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `config-status${isError ? " error" : ""}`;
+}
+
+window.openConfigSettings = function () {
+  const dialog = document.getElementById("config-dialog");
+  const input = document.getElementById("projection-active-days");
+  if (!dialog || !input) return;
+  input.value = String(currentUserSettings.projection_active_days_per_week ?? 3);
+  setConfigStatus("");
+  if (!dialog.open) dialog.showModal();
+};
+
+window.saveConfigSettings = async function () {
+  const input = document.getElementById("projection-active-days");
+  const days = Number(input?.value);
+  if (!Number.isInteger(days) || days < 1 || days > 7) {
+    setConfigStatus("Choose a whole number from 1 to 7.", true);
+    return;
+  }
+  setConfigStatus("Saving...");
+  try {
+    const response = await fetch(`${BASE}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projection_active_days_per_week: days }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "Could not save settings");
+    currentUserSettings = result.settings;
+    const projection = await loadJSON(`${BASE}/api/annual_pl_projection`);
+    renderAnnualPLProjection(projection);
+    setConfigStatus("Settings saved on this device.");
+  } catch (error) {
+    setConfigStatus(`Save failed: ${error.message}`, true);
+  }
+};
+
+function downloadConfigFile(filename, text) {
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+window.exportConfig = async function () {
+  setConfigStatus("Preparing configuration...");
+  try {
+    const config = await loadJSON(`${BASE}/api/config_export`);
+    const text = JSON.stringify(config, null, 2);
+    const filename = `klarwert-config-${new Date().toISOString().slice(0, 10)}.json`;
+    if (window.KlarwertNative?.isNative) {
+      await window.KlarwertNative.shareFile(filename, text);
+    } else {
+      downloadConfigFile(filename, text);
+    }
+    setConfigStatus("Configuration exported. Keep the file somewhere safe.");
+  } catch (error) {
+    setConfigStatus(`Export failed: ${error.message}`, true);
+  }
+};
+
+async function importConfigText(text) {
+  setConfigStatus("Importing configuration...");
+  const response = await fetch(`${BASE}/api/config_import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: text,
+  });
+  const result = await response.json();
+  if (!response.ok || !result.ok) throw new Error(result.error || "Could not import configuration");
+  currentUserSettings = result.settings;
+  const input = document.getElementById("projection-active-days");
+  if (input) input.value = String(currentUserSettings.projection_active_days_per_week);
+  await loadAllData();
+  setConfigStatus(`Configuration imported: ${result.card_rules.length} card category rules restored.`);
+}
+
+window.importConfig = async function () {
+  if (window.KlarwertNative?.isNative) {
+    try {
+      const picked = await window.KlarwertNative.pickConfig();
+      if (picked) await importConfigText(picked.content);
+    } catch (error) {
+      setConfigStatus(`Import failed: ${error.message}`, true);
+    }
+    return;
+  }
+  document.getElementById("config-input")?.click();
+};
+
+window.handleConfigFile = async function (input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    await importConfigText(await file.text());
+  } catch (error) {
+    setConfigStatus(`Import failed: ${error.message}`, true);
+  } finally {
+    input.value = "";
+  }
+};
 
 let weeklyWeeks = [];
 let weeklyIndex = 0;
