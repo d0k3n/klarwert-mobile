@@ -1495,7 +1495,7 @@ const t = report.dividend_totals;
 });
 };
 
-window.downloadTaxCsv = function () {
+window.downloadTaxCsv = async function () {
 if (!lastTaxReport) return;
 const lines = ["date;name;isin;shares;proceeds;cost_basis;fees;gain;acquired"];
 lastTaxReport.disposals.forEach(d => {
@@ -1508,7 +1508,7 @@ lines.push(`interest;${lastTaxReport.interest};;${lastTaxReport.interest}`);
 lines.push(`saveback;${lastTaxReport.saveback};;${lastTaxReport.saveback}`);
 const blob = new Blob([lines.join("\n")], { type: "text/csv" });
 if (window.KlarwertNative && window.KlarwertNative.isNative) {
-  window.KlarwertNative.shareText(`tax_report_${lastTaxReport.year}.csv`, lines.join("\n"));
+  await window.KlarwertNative.shareFile(`tax_report_${lastTaxReport.year}.csv`, lines.join("\n"));
   return;
 }
 const a = document.createElement("a");
