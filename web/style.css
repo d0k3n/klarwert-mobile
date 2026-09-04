@@ -108,6 +108,18 @@ h3 { font-size: 0.95rem; margin: 0 0 4px; font-weight: 600; color: var(--text-pr
 #load-btn:hover { background: #16273e; }
 #load-btn .btn-icon { display: block; }
 
+#export-pdf-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: transparent; color: var(--accent-purple); border: 1px solid var(--accent-purple);
+  padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;
+  font-family: inherit; transition: all 0.15s;
+}
+#export-pdf-btn:hover:not(:disabled) { background: #2c213b; }
+#export-pdf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+#export-pdf-btn[aria-busy="true"] { cursor: progress; }
+#pdf-export-status { font-size: 0.85rem; color: var(--text-secondary); }
+#pdf-export-status.error { color: var(--color-negative); }
+
 /* Summary Cards */
 .cards {
   display: grid;
@@ -428,6 +440,7 @@ tbody tr:nth-child(even):hover { background: var(--bg-elevated); }
   .page-header { flex-direction: column; gap: 8px; align-items: stretch; }
   .page-header .header-right { flex-wrap: wrap; }
   .page-header #load-btn { margin-left: 0; }
+  .page-header #export-pdf-btn { margin-left: 0; }
   .cards { grid-template-columns: repeat(2, 1fr); }
   #product-charts > div > div { min-width: 100%; }
   .dash-group-body { padding-left: 12px; padding-right: 12px; }

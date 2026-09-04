@@ -94,6 +94,15 @@ npx serve web
 In the browser the same code runs with localStorage instead of the native
 filesystem, which is enough to exercise the UI before deploying to a device.
 
+## Dashboard PDF report
+
+After loading a portfolio, use **Export PDF** in the header to create a compact
+dashboard summary. The report contains the key metric cards, monthly P&amp;L
+heatmap, and dashboard charts; it deliberately excludes tables and transaction
+detail. On Android the generated PDF is saved temporarily and opened through
+the system share sheet. In a browser it downloads directly. Like the rest of
+the app, report generation is local to the device.
+
 ## CI/CD and GitHub Releases
 
 GitHub Actions runs the tests and web build for pushes and pull requests to

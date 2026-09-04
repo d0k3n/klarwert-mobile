@@ -467,6 +467,7 @@ declare global {
       isNative: boolean;
       shareText: (filename: string, text: string) => Promise<void>;
       shareFile: (filename: string, text: string) => Promise<void>;
+      sharePdf: (filename: string, base64: string) => Promise<void>;
       openUrl: (url: string) => Promise<void>;
       pickCSV: () => Promise<{ name: string; content: string } | null>;
       pickConfig: () => Promise<{ name: string; content: string } | null>;
@@ -517,6 +518,13 @@ window.KlarwertNative = {
   shareFile: async (filename: string, text: string) => {
     if (!native) return;
     await Filesystem.writeFile({ path: filename, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+    const file = await Filesystem.getUri({ path: filename, directory: Directory.Cache });
+    await Share.share({ title: filename, files: [file.uri], dialogTitle: filename });
+  },
+  sharePdf: async (filename: string, base64: string) => {
+    if (!native) return;
+    // Omitting an encoding tells Capacitor that `data` is Base64 binary data.
+    await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Cache });
     const file = await Filesystem.getUri({ path: filename, directory: Directory.Cache });
     await Share.share({ title: filename, files: [file.uri], dialogTitle: filename });
   },

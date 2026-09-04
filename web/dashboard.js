@@ -22,6 +22,60 @@ let incomeChart = null;
 let spendingCatChart = null;
 let spendingMonthChart = null;
 let currentUserSettings = { projection_active_days_per_week: 3 };
+let dashboardHasData = false;
+let pdfExportInProgress = false;
+
+function setPdfExportAvailability(available) {
+  const button = document.getElementById("export-pdf-btn");
+  if (!button || pdfExportInProgress) return;
+  button.disabled = !available;
+}
+
+window.exportDashboardPdf = async function () {
+  const button = document.getElementById("export-pdf-btn");
+  const status = document.getElementById("pdf-export-status");
+  if (!button || button.disabled || pdfExportInProgress || !dashboardHasData) return;
+
+  if (!window.KlarwertReport || typeof window.KlarwertReport.exportDashboardPdf !== "function") {
+    if (status) {
+      status.textContent = "PDF export is unavailable. Please reload the app.";
+      status.classList.add("error");
+    }
+    return;
+  }
+
+  pdfExportInProgress = true;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  if (status) {
+    status.textContent = "Preparing dashboard PDF…";
+    status.classList.remove("error");
+  }
+
+  try {
+    const result = window.KlarwertNative?.isNative && typeof window.KlarwertNative.sharePdf === "function"
+      ? await window.KlarwertReport.exportDashboardPdf({
+        shareBase64: (filename, base64) => window.KlarwertNative.sharePdf(filename, base64),
+      })
+      : await window.KlarwertReport.exportDashboardPdf({});
+    if (status) status.textContent = result?.shared ? "PDF ready to share." : "PDF downloaded.";
+  } catch (error) {
+    console.error("Dashboard PDF export failed:", error);
+    if (status) {
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+      status.textContent = `PDF export failed.${detail}`;
+      status.classList.add("error");
+    }
+  } finally {
+    pdfExportInProgress = false;
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+};
 
 const TABLE_CONFIGS = {
   'open-positions-table': {
@@ -87,6 +141,8 @@ loadJSON(`${BASE}/api/card_rules`),
 currentUserSettings = settings || currentUserSettings;
 
 const empty = !summary || Object.keys(summary).length === 0;
+dashboardHasData = !empty;
+setPdfExportAvailability(dashboardHasData);
 document.getElementById("empty-state").style.display = empty ? "block" : "none";
 document.getElementById("summary-cards").innerHTML = "";
 document.getElementById("summary-by-asset-class").innerHTML = "";

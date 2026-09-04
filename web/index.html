@@ -29,8 +29,12 @@
       </svg>
       <span>Load CSV</span>
     </button>
+    <button id="export-pdf-btn" type="button" onclick="window.exportDashboardPdf()" disabled>
+      <span>Export PDF</span>
+    </button>
     <input id="csv-input" type="file" accept=".csv,text/csv,text/plain" style="display:none" onchange="window.uploadCSV(this)">
     <span id="reload-status"></span>
+    <span id="pdf-export-status" role="status" aria-live="polite"></span>
   </div>
 </div>
 
@@ -411,6 +415,7 @@
 </details>
 
 <script src="engine.js"></script>
+<script src="report.js"></script>
 <script src="dashboard.js"></script>
 <footer class="app-footer">
   <span>Made with &lt;3 &middot; Free forever.</span>

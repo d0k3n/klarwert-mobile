@@ -6,9 +6,10 @@
   "description": "Klarwert mobile app (Capacitor + TypeScript port of the Python engine)",
   "scripts": {
     "build:engine": "esbuild src/api.ts --bundle --format=iife --platform=browser --outfile=web/engine.js",
-    "build:web": "npm run build:engine",
+    "build:report": "esbuild src/report.ts --bundle --format=iife --platform=browser --outfile=web/report.js",
+    "build:web": "npm run build:engine && npm run build:report",
     "test": "node --test \"tests/*.test.ts\"",
-    "sync": "npm run build:engine && cap sync android && node scripts/configure-android-backup.mjs",
+    "sync": "npm run build:web && cap sync android && node scripts/configure-android-backup.mjs",
     "apk": "npm run sync && cd android && gradlew assembleDebug"
   },
   "devDependencies": {
@@ -23,6 +24,7 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/share": "^8.0.1",
-    "@capawesome/capacitor-file-picker": "^8.0.4"
+    "@capawesome/capacitor-file-picker": "^8.0.4",
+    "jspdf": "^3.0.4"
   }
 }
