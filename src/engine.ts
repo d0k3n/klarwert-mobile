@@ -1,4 +1,4 @@
-import type { Row, EngineResult, LotMatch, OpenPosition, ClosedPosition, Product, CardRule } from "./types.ts";
+import type { Row, EngineResult, LotMatch, OpenPosition, ClosedPosition, Product, CardRule, RealizationEvent } from "./types.ts";
 import { isna, nz, roundTo, fmtYM, fmtYMD, isoFormat, sumOf, normalize, operationIdentity, chargeExpense, tradeGross } from "./util.ts";
 
 interface Lot {
@@ -95,6 +95,29 @@ export function run_engine(df: Row[]): EngineResult {
   const monthly_pl: Record<string, number> = {};
   const daily_pl: Record<string, number> = {};
   const lot_matches: LotMatch[] = [];
+  const realization_events: RealizationEvent[] = [];
+  const calendar = (row: Row) => row.date || fmtYMD(row.datetime);
+  const emit = (row: Row, kind: RealizationEvent["kind"], matches: LotMatch[], net: number, unmatched = 0) => {
+    const shares = matches.reduce((n, m) => n + m.shares, 0);
+    let acquisition = 0;
+    for (const match of matches) {
+      const index = Number(match.lot_key?.replace("@row:", ""));
+      const buy = df[index];
+      if (buy?.tx_type === "BUY" && nz(buy.shares) > 0)
+        acquisition += (chargeExpense(buy, buy.fee) + chargeExpense(buy, buy.tax)) * match.shares / nz(buy.shares);
+    }
+    const cost = matches.reduce((n, m) => n + m.cost_basis, 0);
+    const proceeds = row.tx_type === "SELL" ? tradeGross(row) : kind === "redemption" ? nz(row.amount) : matches.reduce((n, m) => n + m.proceeds, 0);
+    const exit = kind === "extinction" && row.tx_type === "BUY" ? 0 : chargeExpense(row, row.fee) + chargeExpense(row, row.tax);
+    const unknown = unmatched > 0 || kind === "legacy_cover";
+    const identity = row.movement_id || `${sellIdentity(row)}:${rowIndices.get(row)}`;
+    realization_events.push({ id: `${identity}:${kind}`, movement_id: identity, transaction_id: row.transaction_id,
+      date: calendar(row), datetime: isoFormat(row.datetime), kind, isin: row.symbol, name: row.name,
+      shares: shares + unmatched, gross_proceeds: proceeds, gross_cost: cost - acquisition,
+      acquisition_charges: acquisition, exit_charges: exit, gross_result: proceeds - cost + acquisition,
+      net_result: unknown ? null : net, known_net_result: kind === "legacy_cover" ? 0 : net,
+      cost_quality: unknown ? "unknown" : "known", unmatched_shares: unmatched, lots: matches });
+  };
   const per_product = new Map<string, Product>();
   const closed_positions = new Map<string, ClosedPosition>();
   const open_positions: OpenPosition[] = [];
@@ -138,6 +161,7 @@ export function run_engine(df: Row[]): EngineResult {
 
     for (const ev of events) {
       const row = ev.row;
+      const matchStart = lot_matches.length;
 
       if (ev.kind === 1) {
         const amount = nz(row.amount);
@@ -146,9 +170,9 @@ export function run_engine(df: Row[]): EngineResult {
         const cost = open_lots.reduce((acc, l) => acc + l.total_cost, 0);
         const shares_taken = open_lots.reduce((acc, l) => acc + l.shares, 0);
         const realized_pl = amount - cost - disposal_charges;
-        const month = fmtYM(row.datetime);
+        const month = (row.date || fmtYMD(row.datetime)).slice(0, 7);
         monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
-        daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + realized_pl;
+        daily_pl[(row.date || fmtYMD(row.datetime))] = (daily_pl[(row.date || fmtYMD(row.datetime))] ?? 0) + realized_pl;
         const cp = getClosed(isin, name);
         cp.total_realized_pl += realized_pl;
         if (shares_taken > 0) {
@@ -178,6 +202,8 @@ export function run_engine(df: Row[]): EngineResult {
             disposal_fees: disposal_charges * share_ratio,
           });
         }
+        emit(row, "redemption", lot_matches.slice(matchStart), realized_pl,
+          shares_taken <= 0 && !realization_events.some(e => e.isin === isin && e.kind === "extinction" && e.cost_quality === "known") ? Math.max(Math.abs(nz(row.shares)), amount !== 0 || disposal_charges !== 0 ? 1 : 0) : 0);
         open_lots = [];
         continue;
       }
@@ -198,9 +224,9 @@ export function run_engine(df: Row[]): EngineResult {
           const lot: Lot = { id: lot_id++, buy_key: sellKey(row), shares, price, total_cost, datetime: row.datetime };
           const realized_pl = -lot.total_cost;
           const ko_dt = row.datetime;
-          const month = fmtYM(ko_dt);
+          const month = calendar(row).slice(0, 7);
           monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
-          daily_pl[fmtYMD(ko_dt)] = (daily_pl[fmtYMD(ko_dt)] ?? 0) + realized_pl;
+          daily_pl[calendar(row)] = (daily_pl[calendar(row)] ?? 0) + realized_pl;
           const cp = getClosed(isin, name);
           cp.total_realized_pl += realized_pl;
           cp.closed_lots += 1;
@@ -217,6 +243,7 @@ export function run_engine(df: Row[]): EngineResult {
             cost_basis: lot.total_cost,
             pl: -lot.total_cost,
           });
+          emit(row, "extinction", lot_matches.slice(matchStart), realized_pl);
         } else {
           let to_allocate = shares;
           while (to_allocate > 0 && open_lots.length > 0 && open_lots[0].shares < 0 &&
@@ -229,8 +256,8 @@ export function run_engine(df: Row[]): EngineResult {
             const disposal_fees = (neg.disposal_fees ?? 0) * cover_ratio;
             const cover_cost = covered * price + (fee + tax) * covered / shares;
             const cover_pl = proceeds_portion - cover_cost;
-            const month = fmtYM(row.datetime);
-            daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + cover_pl;
+            const month = (row.date || fmtYMD(row.datetime)).slice(0, 7);
+            daily_pl[(row.date || fmtYMD(row.datetime))] = (daily_pl[(row.date || fmtYMD(row.datetime))] ?? 0) + cover_pl;
             monthly_pl[month] = (monthly_pl[month] ?? 0) + cover_pl;
             const cp = getClosed(isin, name);
             cp.total_realized_pl += cover_pl;
@@ -256,11 +283,12 @@ export function run_engine(df: Row[]): EngineResult {
             to_allocate -= covered;
             if (negligibleQuantity(neg.shares, neg.total_cost)) {
               monthly_pl[month] = (monthly_pl[month] ?? 0) + -neg.total_cost;
-              daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + -neg.total_cost;
+              daily_pl[(row.date || fmtYMD(row.datetime))] = (daily_pl[(row.date || fmtYMD(row.datetime))] ?? 0) + -neg.total_cost;
               cp.total_realized_pl += -neg.total_cost;
               open_lots.shift();
             }
           }
+          if (lot_matches.length > matchStart) emit(row, "legacy_cover", lot_matches.slice(matchStart), 0);
           if (to_allocate > 0) {
             const ratio = to_allocate / shares;
             const lot_cost = to_allocate * price + (fee + tax) * ratio;
@@ -316,13 +344,14 @@ export function run_engine(df: Row[]): EngineResult {
         }
 
         const realized_pl = sell_proceeds - cost_basis_total - fee - tax;
-        const month = fmtYM(row.datetime);
+        const month = (row.date || fmtYMD(row.datetime)).slice(0, 7);
         if (sell_proceeds !== 0 || cost_basis_total !== 0 || fee !== 0 || tax !== 0) {
           monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
-          daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + realized_pl;
+          daily_pl[(row.date || fmtYMD(row.datetime))] = (daily_pl[(row.date || fmtYMD(row.datetime))] ?? 0) + realized_pl;
         }
         const cp = getClosed(isin, name);
         cp.total_realized_pl += realized_pl;
+        emit(row, row.type === "WARRANT_EXERCISE" ? "extinction" : "sale", lot_matches.slice(matchStart), realized_pl, remaining);
         const matched_shares = shares - remaining;
         if (matched_shares > 0) {
           cp.closed_lots += 1;
@@ -457,7 +486,7 @@ export function run_engine(df: Row[]): EngineResult {
   summary.by_asset_class = by_asset_class;
 
   const cash_flow = computeCashFlow(cash_rows);
-  const transactions = getRecentTransactions(trades, 50);
+  const transactions = getRecentTransactions(df.slice().sort((a,b) => cmpDatetime(a.datetime,b.datetime)), df.length);
 
   const closedOut: ClosedPosition[] = [];
   for (const cp of closed_positions.values()) {
@@ -465,6 +494,7 @@ export function run_engine(df: Row[]): EngineResult {
   }
 
   return {
+    realization_events: realization_events.sort((a,b) => a.datetime.localeCompare(b.datetime) || a.id.localeCompare(b.id)),
     summary,
     open_positions,
     closed_positions: closedOut,
@@ -519,7 +549,7 @@ function computeSummary(df: Row[], cash_rows: Row[]): Record<string, any> {
 function computeCashFlow(cash_rows: Row[]): Array<Record<string, any>> {
   const grouped = new Map<string, Row[]>();
   for (const r of cash_rows) {
-    const month = fmtYM(r.datetime);
+    const month = (r.date || fmtYMD(r.datetime)).slice(0, 7);
     let list = grouped.get(month);
     if (!list) {
       list = [];
@@ -546,6 +576,8 @@ function getRecentTransactions(trades: Row[], limit = 50): Array<Record<string, 
   for (const row of recent) {
     result.push({
       id: row.transaction_id ?? "",
+      movement_id: row.movement_id || row.transaction_id || `@history:${result.length}`,
+      date: row.date || fmtYMD(row.datetime),
       datetime: isoFormat(row.datetime),
       type: row.tx_type,
       name: row.name,
@@ -582,7 +614,7 @@ export function compute_spending(df: Row[], rules?: CardRule[]): { by_category: 
     const mcc = String(row.mcc_code ?? "").trim();
     const category = category_for_merchant(row.name, mcc, rules);
     by_category.set(category, (by_category.get(category) ?? 0) + -amount);
-    const month = fmtYM(row.datetime);
+    const month = (row.date || fmtYMD(row.datetime)).slice(0, 7);
     by_month.set(month, (by_month.get(month) ?? 0) + -amount);
   }
   const categories = [...by_category.entries()]
@@ -600,7 +632,7 @@ export function compute_income(df: Row[]): { monthly: Array<Record<string, any>>
   const dividends: Array<Record<string, any>> = [];
   for (const row of df) {
     if (row.tx_type !== "DIVIDEND" && row.tx_type !== "INTEREST" && row.tx_type !== "SAVEBACK") continue;
-    const month = fmtYM(row.datetime);
+    const month = (row.date || fmtYMD(row.datetime)).slice(0, 7);
     const amount = isna(row.amount) ? 0 : nz(row.amount);
     let entry = monthly.get(month);
     if (!entry) {

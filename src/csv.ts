@@ -85,9 +85,13 @@ function classifyRow(category: string, type: string, line: number): string {
 }
 
 /** Monetary amounts are gross; signed fee/tax columns are separate cash movements. */
-export function parseCSV(text: string): Row[] {
+export interface DetailedCSVRecord { row: Row; cells: string[]; fields: Record<string, string>; line: number; duplicate: boolean; canonical: string; }
+export interface DetailedCSV { headers: string[]; records: DetailedCSVRecord[]; rows: Row[]; text: string; }
+export function parseCSV(text: string): Row[] { return parseCSVDetailed(text).rows; }
+
+export function parseCSVDetailed(text: string): DetailedCSV {
   const records = parseRecords(text);
-  if (!records.length) return [];
+  if (!records.length) return { headers: [], records: [], rows: [], text };
   const header = records[0].cells;
   const colIndex: Record<string, number> = Object.create(null);
   header.forEach((h, i) => {
@@ -97,6 +101,7 @@ export function parseCSV(text: string): Row[] {
   });
   for (const field of ["datetime", "date", "category", "type", "amount", "currency"])
     if (!Object.hasOwn(colIndex, field)) invalid(records[0].line, field, "missing required column");
+  const detailed: DetailedCSVRecord[] = [];
   const rows: Row[] = [], seen = new Map<string, { content: string; line: number }>();
   for (const { cells, line } of records.slice(1)) {
     if (cells.length !== header.length) invalid(line, "row", `expected ${header.length} columns, received ${cells.length}`);
@@ -139,12 +144,17 @@ export function parseCSV(text: string): Row[] {
     if (row.price !== null && row.price < 0) invalid(line, "price", "price must be nonnegative");
     if (row.fx_rate !== null && row.fx_rate <= 0) invalid(line, "fx_rate", "exchange rate must be positive");
     if (type !== "MIGRATION" && row.shares !== null) row.shares = Math.abs(row.shares);
+    const fields: Record<string, string> = Object.create(null);
+    header.forEach((h, i) => { fields[h.trim()] = h.trim() === "transaction_id" ? cells[i].trim() : cells[i]; });
+    const content = JSON.stringify(Object.keys(fields).sort().map(k => [k, fields[k]]));
+    const detail: DetailedCSVRecord = { row, fields, cells: [...cells], line, duplicate: false, canonical: content };
+    detailed.push(detail);
     if (row.transaction_id) {
       // Compare every exported column, including ones not consumed by the engine, to prevent silent conflicts.
-      const content = JSON.stringify(cells.map((v, i) => header[i].trim() === "transaction_id" ? v.trim() : v));
       const previous = seen.get(row.transaction_id);
       if (previous) {
         if (previous.content !== content) invalid(line, "transaction_id", `conflicting ID ${row.transaction_id}, first seen on line ${previous.line}`);
+        detail.duplicate = true;
         continue;
       }
       seen.set(row.transaction_id, { content, line });
@@ -155,5 +165,5 @@ export function parseCSV(text: string): Row[] {
   for (const row of rows) if (row.type === "MIGRATION") migration.set(row.symbol, (migration.get(row.symbol) ?? 0) + nz(row.shares));
   const unbalanced = [...migration.entries()].filter(([, v]) => Math.abs(v) > 0.001);
   if (unbalanced.length) console.warn(`Unpaired MIGRATION rows (net shares != 0): ${JSON.stringify(unbalanced)}`);
-  return rows;
+  return { headers: [...header], records: detailed, rows, text };
 }

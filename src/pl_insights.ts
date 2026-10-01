@@ -91,3 +91,53 @@ export function computeAnnualPLProjection(
     worst_day: { ...worstDay, realized_pl: roundCurrency(worstDay.realized_pl) },
   };
 }
+
+// Automatic scenarios use only imported movements and valid realized operations.
+import type { Row, EngineResult } from "./types.ts";
+import { movementDate, shiftDay } from "./results_analysis.ts";
+import { roundTo } from "./util.ts";
+
+export interface AutomaticProjectionScenario {
+  status: "available" | "insufficient_sample" | "unknown_cost" | "closed_year";
+  observed_start: string; observed_end: string;
+  observation_days: number; active_days: number; average_active_day: number | null;
+  cadence: number; observed_pl: number; ytd_pl: number; remaining_days: number;
+  projected_remaining_pl: number | null; projected_pl: number | null; formula: string;
+}
+export interface AutomaticProjection {
+  year: number; as_of: string; reference: "last_imported_movement"; year_closed: boolean;
+  coverage_assumption: string;
+  historical: AutomaticProjectionScenario; recent: AutomaticProjectionScenario;
+}
+export function computeAutomaticProjection(rows: Row[], result: EngineResult): AutomaticProjection | null {
+  if (!rows.length) return null;
+  const dates = rows.map(movementDate).sort(), as_of = dates.at(-1)!;
+  const year = Number(as_of.slice(0,4)), yearStart = `${year}-01-01`, yearEnd = `${year}-12-31`;
+  const observedStart = dates.find(d => d >= yearStart)!;
+  const year_closed = year < new Date().getUTCFullYear() || as_of === yearEnd;
+  const annual = (result.realization_events ?? []).filter(e => e.date >= yearStart && e.date <= as_of);
+  const ytd = roundTo(annual.filter(e => e.cost_quality === "known" && e.net_result !== null).reduce((sum,e) => sum + roundTo(e.net_result!,2),0),2);
+  const unknownAnnual = annual.some(e => e.cost_quality === "unknown");
+  const scenario = (start: string): AutomaticProjectionScenario => {
+    const events = annual.filter(e => e.date >= start);
+    const grouped = new Map<string, number>();
+    for (const e of events) if (e.cost_quality === "known" && e.net_result !== null)
+      grouped.set(e.date, (grouped.get(e.date) ?? 0) + roundTo(e.net_result,2));
+    const observation_days = daysBetweenInclusive(start, as_of), active_days = grouped.size;
+    const observed_pl = roundTo([...grouped.values()].reduce((s,v) => s + v,0),2);
+    const average = active_days ? observed_pl / active_days : null;
+    const cadence = active_days / observation_days;
+    const remaining_days = year_closed ? 0 : Math.max(0, daysBetweenInclusive(as_of, yearEnd)-1);
+    const status = unknownAnnual ? "unknown_cost" : year_closed ? "closed_year" : observation_days < 30 || active_days < 10 ? "insufficient_sample" : "available";
+    const future = status === "available" ? (average ?? 0) * cadence * remaining_days : status === "closed_year" ? 0 : null;
+    return { status, observed_start: start, observed_end: as_of, observation_days, active_days,
+      average_active_day: average === null ? null : roundTo(average,2), cadence,
+      observed_pl, ytd_pl: ytd, remaining_days,
+      projected_remaining_pl: future === null ? null : roundTo(future,2),
+      projected_pl: future === null ? null : roundTo(ytd + future,2),
+      formula: "annual observed net + (window net / realization days) × (realization days / observed calendar days) × remaining calendar days" };
+  };
+  return { year, as_of, reference: "last_imported_movement", year_closed,
+    coverage_assumption: "Assumes imported movements cover the interval from first movement in this year through the last imported movement; completeness is unverified.",
+    historical: scenario(observedStart), recent: scenario([observedStart, shiftDay(as_of,-59)].sort().at(-1)!) };
+}

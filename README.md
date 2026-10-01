@@ -26,6 +26,12 @@ corrections, import contract and validation results.
 
 ## Project layout
 
+The realized-results consultation now has a common inclusive period, daily
+calendar/FIFO details, complete paginated history, incremental CSV imports,
+automatic projections, analytical exports and full restorable backups. See
+[results analysis implementation](docs/RESULTS_ANALYSIS_IMPLEMENTATION.md) for
+accounting definitions, coverage limits, revision recovery and validation.
+
 ```
 src/            # TypeScript engine (port of portfolio/)
 web/            # frontend (index.html, dashboard.js, style.css, vendor/)

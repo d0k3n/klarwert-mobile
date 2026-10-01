@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import type { ResultsAnalysis } from "./types.ts";
 
 /**
  * A deliberately small allowlist for the dashboard PDF.  The report is
@@ -50,6 +51,8 @@ const COLORS = {
 export type PdfShareCallback = (filename: string, base64: string) => Promise<void>;
 
 export interface DashboardPdfOptions {
+  /** Frozen analytical snapshot; independent of mutable dashboard DOM. */
+  analysis?: ResultsAnalysis;
   title?: string;
   filename?: string;
   /**
@@ -182,7 +185,8 @@ function paintCard(doc: jsPDF, card: Card, x: number, y: number, width: number, 
 class PdfLayout {
   y = PAGE.margin + 16;
 
-  constructor(readonly doc: jsPDF) {}
+  readonly doc: jsPDF;
+  constructor(doc: jsPDF) { this.doc = doc; }
 
   newPage(): void {
     this.doc.addPage("a4", "portrait");
@@ -333,6 +337,7 @@ function downloadPdf(filename: string, doc: jsPDF): void {
  * cards and the monthly heatmap are drawn as native PDF primitives.
  */
 export async function exportDashboardPdf(options: DashboardPdfOptions = {}): Promise<DashboardPdfResult> {
+  if (options.analysis) return exportResultsPdf(options);
   const now = options.now ?? new Date();
   const title = options.title ?? "Klarwert portfolio report";
   const filename = options.filename ?? `klarwert-dashboard-${dateStamp(now)}.pdf`;
@@ -369,6 +374,39 @@ export async function exportDashboardPdf(options: DashboardPdfOptions = {}): Pro
   } finally {
     restoreGroups();
   }
+}
+
+async function exportResultsPdf(options: DashboardPdfOptions): Promise<DashboardPdfResult> {
+  const analysis = structuredClone(options.analysis!);
+  const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  const filename = options.filename ?? `klarwert-results-${analysis.period.start}-${analysis.period.end}.pdf`;
+  addHeader(doc, "Klarwert realized results", options.now ?? new Date());
+  const layout = new PdfLayout(doc);
+  const line = (text: string) => {
+    const lines = doc.splitTextToSize(text, CONTENT_WIDTH);
+    layout.ensure(lines.length * 5 + 3);
+    setText(doc, COLORS.ink, 9);
+    doc.text(lines, PAGE.margin, layout.y);
+    layout.y += lines.length * 5 + 3;
+  };
+  line(`Period: ${analysis.period.start} to ${analysis.period.end}. Revision: ${analysis.revision}`);
+  line(`Source: imported Trade Republic statement. First movement: ${analysis.coverage.first_movement ?? "unavailable"}; last movement: ${analysis.coverage.last_movement ?? "unavailable"}.`);
+  line(analysis.coverage.warning || "Movement dates do not prove complete statement coverage.");
+  layout.heading("Results in EUR");
+  const m = analysis.metrics;
+  line(`Known net realized result: ${m.net_result.toFixed(2)}. Operations: ${m.operations}; valid: ${m.valid_operations}; incomplete: ${m.incomplete_operations}.`);
+  line(`Win rate: ${m.win_rate == null ? "unavailable" : `${(m.win_rate * 100).toFixed(1)}%`}; average result: ${m.average_result == null ? "unavailable" : m.average_result.toFixed(2)}.`);
+  line(`Dividends: ${analysis.income.dividends.toFixed(2)}; interest: ${analysis.income.interest.toFixed(2)}. These are separate from operation statistics.`);
+  line("Net realized result is gross proceeds minus FIFO acquisition cost and attributable recorded acquisition/exit charges. Unknown acquisition costs are excluded from valid statistics; the known subtotal is not a complete portfolio result. Calendar dates are statement movement dates. No historical market valuation is inferred.");
+  layout.heading("Daily realized result and cumulative result");
+  for (const day of analysis.daily.filter(d => d.operations)) line(`${day.date}: ${day.net_result.toFixed(2)} EUR; cumulative ${day.cumulative.toFixed(2)} EUR; ${day.operations} operations; ${day.incomplete} incomplete.`);
+  const pages = addFooters(doc);
+  if (options.shareBase64) {
+    await options.shareBase64(filename, toBase64(doc.output("arraybuffer")));
+    return { filename, pages, shared: true };
+  }
+  downloadPdf(filename, doc);
+  return { filename, pages, shared: false };
 }
 
 declare global {

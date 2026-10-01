@@ -17,7 +17,12 @@ import {
   uncategorized_vendors,
 } from "./engine.ts";
 import { compute_performance } from "./performance.ts";
-import { computeAnnualPLProjection } from "./pl_insights.ts";
+import { computeAnnualPLProjection, computeAutomaticProjection } from "./pl_insights.ts";
+import { analyzeResults, paginate } from "./results_analysis.ts";
+import { resolveAnalysisPeriod, analysisCSV } from "./analysis_export.ts";
+import { emptyLedger, prepareImport, ledgerRows, type ImportLedger } from "./import_ledger.ts";
+import { createRevisionStore } from "./storage.ts";
+import { exportBackup, parseBackup, validatePortfolioState, type PortfolioState } from "./backup.ts";
 import {
   DEFAULT_USER_SETTINGS,
   makeUserConfig,
@@ -39,13 +44,42 @@ const native = Capacitor.isNativePlatform();
 let df: Row[] | null = null;
 let cacheIds: string | null = null;
 let cacheResult: EngineResult | null = null;
-type StoredPrice = { price: number; source: string; quoted_at?: string };
+type StoredPrice = { price: number; source: "auto" | "manual"; quoted_at?: string };
 let prices: Record<string, StoredPrice> = {};
 let tickers: Record<string, string> = {};
 let cardRules: CardRule[] = [];
 let userSettings: UserSettings = { ...DEFAULT_USER_SETTINGS };
 let knockedIds = new Set<string>();
 let apiKey = "";
+let ledger: ImportLedger = emptyLedger();
+let revision = "legacy";
+const portfolioStore = createRevisionStore({ read: fsRead, write: fsWrite }, validatePortfolioState);
+
+function portfolioState(): PortfolioState {
+  return { ledger, config: makeUserConfig(userSettings, cardRules), prices, tickers, knockedIds: [...knockedIds] };
+}
+
+async function publishPortfolio(state: PortfolioState): Promise<void> {
+  state = { ...state, ledger: { ...state.ledger, revision: String(Number(ledger.revision) + 1) } };
+  validatePortfolioState(state);
+  const flags = new Set(state.knockedIds);
+  assertFiniteAccounting(run_engine(ledgerRows(state.ledger).map(row => ({ ...row, knocked: flags.has(row.transaction_id) }))));
+  await portfolioStore.publish(state);
+  applyPortfolio(state);
+}
+
+function applyPortfolio(state: PortfolioState): void {
+  ledger = state.ledger;
+  df = ledgerRows(ledger);
+  const config = parseUserConfig(state.config);
+  userSettings = config.settings;
+  cardRules = config.card_rules;
+  prices = normalizePrices(state.prices);
+  tickers = state.tickers;
+  knockedIds = new Set(state.knockedIds);
+  revision = String(ledger.revision);
+  invalidateCache();
+}
 
 const EMPTY_RESULT: EngineResult = {
   summary: {},
@@ -64,15 +98,14 @@ async function fsRead(name: string): Promise<string | null> {
     try {
       const res = await Filesystem.readFile({ path: name, directory: Directory.Data, encoding: Encoding.UTF8 });
       return typeof res.data === "string" ? res.data : null;
-    } catch {
-      return null;
+    } catch (error: any) {
+      // Capacitor Android's installed adapter reports missing files with code 0008.
+      // Permission and I/O failures must never trigger an empty-ledger migration.
+      if (error?.code === "OS-PLUG-FILE-0008") return null;
+      throw error;
     }
   }
-  try {
-    return localStorage.getItem("klarwert:" + name);
-  } catch {
-    return null;
-  }
+  return localStorage.getItem("klarwert:" + name);
 }
 
 async function fsWrite(name: string, data: string): Promise<void> {
@@ -182,6 +215,17 @@ async function initEngine(): Promise<void> {
   const kd = parseJSON(await fsRead("knocked_down.json"));
   knockedIds = new Set(Array.isArray(kd?.ids) ? kd.ids : []);
   await loadApiKey();
+  const persisted = await portfolioStore.load();
+  if (persisted) {
+    applyPortfolio(persisted);
+  } else if (csvText !== null && df?.length) {
+    // Keep every legacy file intact; publish and read back the migrated state first.
+    const migrated = prepareImport(emptyLedger(), csvText).ledger;
+    const state = { ...portfolioState(), ledger: migrated };
+    evaluateRows(ledgerRows(migrated));
+    await portfolioStore.publish(state);
+    applyPortfolio(state);
+  }
 }
 
 function invalidateCache(): void {
@@ -254,51 +298,85 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
 
   try {
     switch (`${method} ${endpoint}`) {
+      case "GET results":
+      case "GET realizations":
+      case "GET movements":
+      case "GET analysis_csv": {
+        if (query.has("revision") && query.get("revision") !== revision)
+          return jsonResponse({ ok: false, error: "Portfolio revision changed; reload before exporting" }, 409);
+        let period;
+        try { period = resolveAnalysisPeriod(query, df ?? []); }
+        catch (e: any) { return jsonResponse({ ok: false, error: e.message }, 400); }
+        const analysis = analyzeResults(df ?? [], computeData(), period, revision);
+        if (endpoint === "results") return jsonResponse(analysis);
+        if (endpoint === "analysis_csv") return new Response(analysisCSV(analysis), {
+          headers: { "Content-Type": "text/csv;charset=utf-8", "X-Portfolio-Revision": revision },
+        });
+        const request = { page: Number(query.get("page") ?? 1), page_size: Number(query.get("page_size") ?? 25), search: query.get("search") ?? "" };
+        if (endpoint === "realizations") return jsonResponse({ ...paginate(analysis.realizations, request), revision });
+        const rows = (df ?? []).filter(row => row.date >= period.start && row.date <= period.end)
+          .slice().sort((a, b) => b.datetime.getTime() - a.datetime.getTime() || String(a.movement_id).localeCompare(String(b.movement_id)));
+        return jsonResponse({ ...paginate(rows, request), revision });
+      }
+      case "GET automatic_projection":
+        return jsonResponse({ ...computeAutomaticProjection(df ?? [], computeData()), revision });
+      case "GET backup":
+        return new Response(exportBackup(portfolioState()), { headers: { "Content-Type": "application/json" } });
+      case "POST backup_restore": {
+        let restored;
+        try {
+          restored = parseBackup(typeof body === "string" ? body : JSON.stringify(body));
+          // A restored portfolio receives a new local revision, even for the same source data.
+          restored.ledger.revision = String(Number(ledger.revision) + 1);
+          const flags = new Set(restored.knockedIds);
+          assertFiniteAccounting(run_engine(ledgerRows(restored.ledger).map(row => ({ ...row, knocked: flags.has(row.transaction_id) }))));
+        } catch (e: any) { return jsonResponse({ ok: false, error: `Invalid backup: ${e.message}` }, 400); }
+        await portfolioStore.publish(restored);
+        applyPortfolio(restored);
+        return jsonResponse({ ok: true, count: df?.length ?? 0, revision });
+      }
+      case "POST recover_previous": {
+        const restored = await portfolioStore.recoverPrevious();
+        if (!restored) return jsonResponse({ ok: false, error: "No previous revision available" }, 400);
+        applyPortfolio(restored);
+        return jsonResponse({ ok: true, count: df?.length ?? 0, revision });
+      }
       case "POST upload": {
         if (!(body instanceof FormData)) return jsonResponse({ ok: false, error: "no file provided" }, 400);
         const file = body.get("file");
         if (!(file instanceof File) || !file.name) return jsonResponse({ ok: false, error: "no file provided" }, 400);
         const raw = await file.text();
-        let parsed: Row[];
-        let evaluated: EngineResult;
+        let prepared;
         try {
-          parsed = parseCSV(raw);
-          if (!parsed.length) throw new Error("CSV contains no transactions");
-          evaluated = evaluateRows(parsed);
+          prepared = prepareImport(ledger, raw, { mode: body.get("mode") === "replace" ? "replace" : "incremental" });
+          evaluateRows(ledgerRows(prepared.ledger));
         } catch (e: any) {
-          return jsonResponse({ ok: false, error: `invalid CSV: ${e?.message ?? e}` }, 400);
+          return jsonResponse({ ok: false, error: `invalid CSV: ${e?.message ?? e}`, conflicts: 1 }, 400);
         }
-        try {
-          await fsWrite("transactions.csv", raw);
-        } catch (e: any) {
-          return jsonResponse({ ok: false, error: `Could not save CSV: ${e?.message ?? e}` }, 500);
+        if (prepared.ledger.revision !== ledger.revision) {
+          try {
+            const state = { ...portfolioState(), ledger: prepared.ledger };
+            await portfolioStore.publish(state);
+            applyPortfolio(state);
+          } catch (e: any) {
+            return jsonResponse({ ok: false, error: `Could not save CSV: ${e?.message ?? e}` }, 500);
+          }
         }
-        df = parsed;
-        cacheResult = evaluated;
-        cacheIds = [...knockedIds].sort().join(",");
-        console.info(`Loaded ${parsed.length} transactions from upload ${file.name}`);
-        return jsonResponse({ ok: true, count: parsed.length, filename: file.name });
+        return jsonResponse({ ok: true, ...prepared.summary, filename: file.name, revision });
       }
 
       case "POST reload": {
-        const text = await fsRead("transactions.csv");
-        if (text === null) return jsonResponse({ ok: false, error: "no CSV loaded" }, 400);
-        try {
-          const parsed = parseCSV(text);
-          if (!parsed.length) throw new Error("CSV contains no transactions");
-          const evaluated = evaluateRows(parsed);
-          df = parsed;
-          cacheResult = evaluated;
-          cacheIds = [...knockedIds].sort().join(",");
-          console.info(`Reloaded ${df.length} transactions`);
-          return jsonResponse({ ok: true, count: df.length });
-        } catch (e: any) {
-          return jsonResponse({ ok: false, error: String(e?.message ?? e) }, 500);
-        }
+        const state = await portfolioStore.load();
+        if (!state) return jsonResponse({ ok: false, error: "no CSV loaded" }, 400);
+        evaluateRows(ledgerRows(state.ledger));
+        applyPortfolio(state);
+        return jsonResponse({ ok: true, count: df?.length ?? 0, revision });
       }
 
       case "GET status":
-        return jsonResponse({ loaded: df !== null, count: df ? df.length : 0 });
+        return jsonResponse({ loaded: df !== null, count: df ? df.length : 0, revision,
+          first_movement: df?.map(r => r.date).sort()[0] ?? null,
+          last_movement: df?.map(r => r.date).sort().at(-1) ?? null });
 
       case "GET support":
         return jsonResponse({ donation_url: DONATION_URL, github_url: GITHUB_URL });
@@ -325,8 +403,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
           if (v === null) return jsonResponse({ ok: false, error: "price must be a finite, non-negative number" }, 400);
           nextPrices[isin] = { price: v, source: "manual", quoted_at: new Date().toISOString() };
         }
-        await fsWrite("prices.json", JSON.stringify(nextPrices));
-        prices = nextPrices;
+        await publishPortfolio({ ...portfolioState(), prices: nextPrices });
         return jsonResponse({ ok: true, prices });
       }
 
@@ -342,16 +419,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const out = await refresh_prices(result.open_positions, prices, tickers, apiKey);
         const nextPrices = normalizePrices({ ...prices, ...out.prices });
         const nextTickers = { ...tickers, ...out.tickers };
-        await fsWrite("prices.json", JSON.stringify(nextPrices));
-        prices = nextPrices;
-        tickers = nextTickers;
-        // Tickers are a derived lookup cache. Its persistence failure must not
-        // turn a successfully saved valuation into an apparent failed write.
-        try {
-          await fsWrite("tickers.json", JSON.stringify(nextTickers));
-        } catch (e: any) {
-          console.warn(`Could not save ticker cache: ${e?.message ?? e}`);
-        }
+        await publishPortfolio({ ...portfolioState(), prices: nextPrices, tickers: nextTickers });
         return jsonResponse({ prices: out.prices, skipped: out.skipped });
       }
 
@@ -402,8 +470,8 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         return jsonResponse(userSettings);
 
       case "POST settings": {
-        userSettings = validateUserSettings(await readJsonBody(body));
-        await saveUserConfig();
+        const settings = validateUserSettings(await readJsonBody(body));
+        await publishPortfolio({ ...portfolioState(), config: makeUserConfig(settings, cardRules) });
         return jsonResponse({ ok: true, settings: userSettings });
       }
 
@@ -412,9 +480,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
 
       case "POST config_import": {
         const config = parseUserConfig(await readJsonBody(body));
-        userSettings = config.settings;
-        cardRules = config.card_rules;
-        await saveUserConfig();
+        await publishPortfolio({ ...portfolioState(), config: makeUserConfig(config.settings, config.card_rules) });
         return jsonResponse({ ok: true, settings: userSettings, card_rules: cardRules });
       }
 
@@ -431,9 +497,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const nextIds = new Set(knockedIds);
         if (nextIds.has(txnId)) nextIds.delete(txnId);
         else nextIds.add(txnId);
-        await fsWrite("knocked_down.json", JSON.stringify({ ids: [...nextIds].sort() }));
-        knockedIds = nextIds;
-        invalidateCache();
+        await publishPortfolio({ ...portfolioState(), knockedIds: [...nextIds].sort() });
         return jsonResponse({ ok: true, flagged: knockedIds.has(txnId) });
       }
 
@@ -477,11 +541,11 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const category = String(b.category ?? "").trim();
         if (!pattern || !category) return jsonResponse({ ok: false, error: "pattern and category are required" }, 400);
         const norm = normalize(pattern);
-        cardRules = validateCardRules([
+        const nextRules = validateCardRules([
           ...cardRules.filter((r) => normalize(r?.pattern) !== norm),
           { pattern, category },
         ]);
-        await saveUserConfig();
+        await publishPortfolio({ ...portfolioState(), config: makeUserConfig(userSettings, nextRules) });
         return jsonResponse({ ok: true, rules: cardRules });
       }
 
@@ -490,8 +554,8 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const pattern = String(b.pattern ?? "").trim();
         if (!pattern) return jsonResponse({ ok: false, error: "pattern is required" }, 400);
         const norm = normalize(pattern);
-        cardRules = cardRules.filter((r) => normalize(r?.pattern) !== norm);
-        await saveUserConfig();
+        const nextRules = cardRules.filter((r) => normalize(r?.pattern) !== norm);
+        await publishPortfolio({ ...portfolioState(), config: makeUserConfig(userSettings, nextRules) });
         return jsonResponse({ ok: true, rules: cardRules });
       }
 

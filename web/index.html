@@ -44,18 +44,38 @@
   Your data stays on this machine &mdash; nothing is uploaded anywhere.</p>
 </div>
 
+<section id="results-analysis" aria-labelledby="results-title">
+ <h2 id="results-title">Realized results</h2>
+ <div class="results-controls">
+  <label>Period <select id="results-period"><option value="all">All imported history</option><option value="today">Today</option><option value="week">This week</option><option value="month">This month</option><option value="year">This year</option><option value="custom">Date range</option></select></label>
+  <label>From <input id="results-start" type="date"></label><label>To <input id="results-end" type="date"></label><button id="results-apply">Apply period</button>
+ </div>
+ <p id="results-status" role="status" aria-live="polite"></p><p id="results-coverage"></p>
+ <div id="results-cards" class="cards"></div><p id="results-comparison"></p>
+ <label>Bars <select id="results-aggregation"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label>
+ <div class="results-chart"><canvas id="results-curve" aria-label="Daily cumulative realized result" role="img"></canvas></div><div class="results-chart"><canvas id="results-bars" aria-label="Realized results by date" role="img"></canvas></div>
+ <div class="results-controls"><button id="results-month-prev" aria-label="Previous calendar month">Previous</button><strong id="results-month"></strong><button id="results-month-next" aria-label="Next calendar month">Next</button></div>
+ <div class="results-calendar-head" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div id="results-calendar" class="results-calendar" aria-label="Realized results calendar"></div>
+ <p>— No realizations · 0.00 Realized zero · ? Incomplete acquisition cost</p>
+ <div class="results-controls"><label>History <select id="results-history-kind"><option value="realizations">Realizations</option><option value="movements">Statement movements</option></select></label><label>Product / ISIN <input id="results-search" type="search"></label><button id="results-search-apply">Search</button><button id="results-clear-day">All days in period</button></div>
+ <p id="results-history-count" role="status"></p><div id="results-history"></div><div class="results-controls"><button id="results-page-prev">Previous page</button><span id="results-page"></span><button id="results-page-next">Next page</button></div>
+ <h3>Automatic annual extrapolation</h3><div id="results-projection"></div>
+ <div class="results-controls"><button id="results-csv" disabled>Analytical CSV</button><button id="results-backup">Full restorable backup</button><label class="results-file">Restore backup <input id="results-restore" type="file" accept=".json,application/json"></label><button id="results-recover">Recover previous revision</button><label><input type="checkbox" id="results-replace"> Replace all history on next CSV import</label></div>
+ <p>PDF summarizes the selected period. Analytical CSV contains operation costs. Backup includes all history and legacy settings. Replacing or restoring publishes a complete revision; the previous revision can be recovered.</p>
+ <dialog id="results-detail"><button id="results-detail-close">Back to history</button><h3>Realization detail</h3><div id="results-detail-body"></div></dialog>
+</section>
 <div class="dash-controls">
   <button id="expand-all-btn">Expand all</button>
   <button id="collapse-all-btn">Collapse all</button>
 </div>
 
-<details class="dash-group" id="group-overview" open>
-  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Overview</h2></summary>
+<details class="dash-group" id="group-overview">
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Accounting audit · full history</h2></summary>
   <div class="dash-group-body">
 
-<section id="summary-cards" class="cards"></section>
+<section id="summary-cards" class="cards" hidden></section>
 
-<section id="summary-by-asset-class" class="cards"></section>
+<section id="summary-by-asset-class" class="cards" hidden></section>
 
 <section>
   <h2>Reconciliation</h2>
@@ -67,7 +87,7 @@
   </div>
 </section>
 
-<section>
+<section hidden>
   <h2 id="monthly-pl-heading">Monthly Realized P&amp;L</h2>
   <div class="week-nav month-nav" aria-label="Monthly P&amp;L navigation">
     <button id="month-prev" type="button" aria-label="Previous month" onclick="window.monthlyNav(-1)">&laquo; Prev</button>
@@ -95,7 +115,7 @@
   <p id="monthly-pl-status" class="sr-only" aria-live="polite"></p>
 </section>
 
-<section>
+<section hidden>
   <h2>Weekly Realized P&amp;L</h2>
   <div class="week-nav">
     <button id="week-prev" onclick="window.weeklyNav(-1)">&laquo; Prev</button>
@@ -106,7 +126,7 @@
   <canvas id="weekly-pl-chart"></canvas>
 </section>
 
-<section id="annual-pl-projection">
+<section id="annual-pl-projection" hidden>
   <div class="projection-heading">
     <h2>Annual P&amp;L Projection</h2>
     <button id="projection-settings-btn" class="icon-button" type="button" aria-label="Projection and backup settings" title="Projection and backup settings" onclick="window.openConfigSettings()">&#9881;</button>
@@ -135,7 +155,7 @@
 </dialog>
 <input id="config-input" type="file" accept=".json,application/json" hidden onchange="window.handleConfigFile(this)">
 
-<section>
+<section hidden>
   <h2>Realized P&amp;L Over Time</h2>
   <canvas id="pl-evolution-chart"></canvas>
 </section>
@@ -162,7 +182,7 @@
 </details>
 
 <details class="dash-group" id="group-portfolio">
-  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Portfolio</h2></summary>
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Portfolio · full history</h2></summary>
   <div class="dash-group-body">
 
 <section>
@@ -260,7 +280,7 @@
 </details>
 
 <details class="dash-group" id="group-income">
-  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Income &amp; Spending</h2></summary>
+  <summary class="dash-summary"><span class="dash-arrow"></span><h2>Income &amp; Spending · full history</h2></summary>
   <div class="dash-group-body">
 
 <section>

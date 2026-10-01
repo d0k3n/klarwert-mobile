@@ -46,6 +46,10 @@ test("parity: run_engine matches Python reference", () => {
   const result = run_engine(d);
   const expected = structuredClone(reference.result);
   const actual = structuredClone(result);
+  // Compare the unchanged legacy accounting contract; new complete history is checked separately.
+  delete actual.realization_events;
+  actual.transactions = actual.transactions.filter(r => r.type === "BUY" || r.type === "SELL").slice(0,50).map(({date,movement_id,...row}) => row);
+  assert.equal(result.transactions.length, d.length, "every statement movement remains accessible");
   const cashMatches=actual.lot_matches.filter(m=>m.shares === 0 && !m.lot_key);
   actual.lot_matches=actual.lot_matches.filter(m=>!(m.shares === 0 && !m.lot_key));
   const plByIsin = new Map<string,number>();
@@ -140,7 +144,10 @@ test("parity: performance matches", () => {
   const perf = compute_performance(d, result);
   // M01 includes consumption distributions; M02 keeps cost as an explicit
   // baseline and declines to present total return without market coverage.
-  const { xirr, terminal_value, ...legacyStats } = reference.performance;
+  const { xirr, terminal_value, winners, losers, win_rate, avg_win, avg_loss, ...legacyStats } = reference.performance;
+  // Explicit operation-level expectations replace ISIN aggregation, without modifying financial snapshots.
+  assert.equal(perf.winners, 125); assert.equal(perf.losers, 84);
+  assert.equal(perf.win_rate, 59.8); assert.equal(perf.avg_win, 127.02); assert.equal(perf.avg_loss, -155.12);
   expectDeepEqual(legacyStats, Object.fromEntries(Object.keys(legacyStats).map(k => [k, perf[k]])), "performance stats");
   assert.equal(perf.terminal_value_at_cost, terminal_value);
   assert.equal(perf.xirr_at_cost, 0.1316);

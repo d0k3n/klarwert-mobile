@@ -14,7 +14,7 @@ storage.set("klarwert:tickers.json", JSON.stringify({ AUTO: "SYNTHETIC.DE" }));
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   getItem: (key: string) => storage.get(key) ?? null,
   setItem: (key: string, value: string) => {
-    if (key === failWriteKey) throw new Error("Synthetic storage quota exceeded");
+    if (key === failWriteKey || (failWriteKey === "portfolio" && key.includes("portfolio-manifest-"))) throw new Error("Synthetic storage quota exceeded");
     storage.set(key, value);
   },
   removeItem: (key: string) => storage.delete(key),
@@ -34,8 +34,9 @@ async function request(endpoint: string, method = "GET", body?: unknown) {
   });
   return { status: response.status, data: await response.json() };
 }
-async function upload(text: string) {
+async function upload(text: string, mode = "replace") {
   const form = new FormData();
+  form.set("mode", mode);
   form.set("file", new File([text], "synthetic-transactions.csv", { type: "text/csv" }));
   return request("upload", "POST", form);
 }
@@ -87,7 +88,7 @@ test("invalid uploads preserve both the prior stored CSV and the computed portfo
 test("CSV persistence failure leaves the prior memory, cache and persisted portfolio intact", async () => {
   await loadDeposit();
   const previous = await portfolioSnapshot(), stored = storage.get("klarwert:transactions.csv");
-  failWriteKey = "klarwert:transactions.csv";
+  failWriteKey = "portfolio";
   try {
     const result = await upload(csv({ ...deposit, amount: "2500" }));
     assert.equal(result.status, 500); assert.match(result.data.error, /Could not save CSV/);
@@ -96,17 +97,13 @@ test("CSV persistence failure leaves the prior memory, cache and persisted portf
   } finally { failWriteKey = null; }
 });
 
-test("reloading corrupted stored CSV leaves the last valid in-memory portfolio intact", async () => {
+test("reload ignores a corrupted legacy CSV after migration to the revision ledger", async () => {
   await loadDeposit();
-  const previous = await portfolioSnapshot(), stored = storage.get("klarwert:transactions.csv")!;
-  try {
-    for (const text of [csv({ ...deposit, amount: "invalid" }), csv({ ...deposit, datetime: "invalid" }), ""]) {
-      storage.set("klarwert:transactions.csv", text);
-      const result = await request("reload", "POST");
-      assert.equal(result.status, 500); assert.equal(result.data.ok, false);
-      assert.deepEqual(await portfolioSnapshot(), previous);
-    }
-  } finally { storage.set("klarwert:transactions.csv", stored); }
+  const previous = await portfolioSnapshot();
+  storage.set("klarwert:transactions.csv", "corrupted legacy source");
+  const result = await request("reload", "POST");
+  assert.equal(result.status, 200);
+  assert.deepEqual(await portfolioSnapshot(), previous);
 });
 
 test("manual price validation rejects bad values without changing the existing quote", async () => {
@@ -123,7 +120,7 @@ test("manual price validation rejects bad values without changing the existing q
 test("manual price persistence failure preserves the previous in-memory and stored quote", async () => {
   assert.equal((await request("prices", "POST", { isin: "ISIN", price: 120 })).status, 200);
   const previous = await request("prices"), stored = storage.get("klarwert:prices.json");
-  failWriteKey = "klarwert:prices.json";
+  failWriteKey = "portfolio";
   try {
     assert.equal((await request("prices", "POST", { isin: "ISIN", price: 150 })).status, 500);
     assert.deepEqual(await request("prices"), previous);
@@ -168,7 +165,7 @@ test("ticker cache write failure during refresh cannot split persisted and in-me
     const response = await request("refresh_prices", "POST");
     assert.ok([200, 500].includes(response.status), "cache failure may retain the prior valuation or commit the refreshed one");
     const memory = (await request("prices")).data;
-    assert.deepEqual(memory, JSON.parse(storage.get("klarwert:prices.json")!), "memory and storage must agree after refresh, including a ticker cache failure");
+    assert.deepEqual(memory, (await request("backup")).data.state.prices, "memory and storage must agree after refresh, including a ticker cache failure");
     assert.equal(memory.GOOD.price, 12, "unrelated manual prices remain intact");
   } finally {
     globalThis.fetch = originalFetch; failWriteKey = null;
@@ -184,7 +181,7 @@ test("concurrent manual price mutations retain both quotes in memory and storage
   assert.deepEqual(results.map(r => r.status), [200, 200]);
   const prices = (await request("prices")).data;
   assert.equal(prices.CONCURRENT_A.price, 101); assert.equal(prices.CONCURRENT_B.price, 202);
-  assert.deepEqual(prices, JSON.parse(storage.get("klarwert:prices.json")!));
+  assert.deepEqual(prices, (await request("backup")).data.state.prices);
 });
 
 test("knock-out flag persistence failure preserves flags and the previous summary cache", async () => {
@@ -192,7 +189,7 @@ test("knock-out flag persistence failure preserves flags and the previous summar
   assert.equal((await upload(csv(deposit, buy))).status, 200);
   const flags = await request("knocked_down"), previous = await portfolioSnapshot();
   const persisted = storage.get("klarwert:knocked_down.json");
-  failWriteKey = "klarwert:knocked_down.json";
+  failWriteKey = "portfolio";
   try {
     const result = await request("knocked_down/toggle", "POST", { id: "knockout_buy" });
     assert.equal(result.status, 500);
@@ -213,4 +210,59 @@ test("an anonymous automatic knock-out cannot collide with a real transaction ID
   assert.equal(positions.data[0].isin, "DERIVATIVE_Y"); assert.equal(positions.data[0].total_cost, 500);
   assert.equal(executions.status, 200);
   assert.deepEqual(executions.data.map((entry: any) => entry.isin), ["DERIVATIVE_X"]);
+});
+
+
+test("incremental API deduplicates IDs, blocks conflicts and exports a coherent period revision", async () => {
+  const buy = { ...deposit, datetime: "2025-01-02T00:00:00Z", date: "2025-01-02", category: "TRADING", type: "BUY", name: "Asset", symbol: "ISIN", shares: "1", price: "100", amount: "-100", fee: "-1", transaction_id: "result-buy" };
+  const sell = { ...buy, datetime: "2025-02-02T00:00:00Z", date: "2025-02-02", type: "SELL", amount: "110", price: "110", tax: "-2", transaction_id: "result-sell" };
+  assert.equal((await upload(csv(deposit,buy))).status,200);
+  const added = await upload(csv(buy,sell), "incremental");
+  assert.equal(added.status,200); assert.equal(added.data.added,1); assert.equal(added.data.duplicates,1);
+  const before = await portfolioSnapshot();
+  const duplicate = await upload(csv(buy,sell), "incremental");
+  assert.equal(duplicate.status,200); assert.equal(duplicate.data.added,0);
+  assert.deepEqual(await portfolioSnapshot(),before);
+  const conflict = await upload(csv({...sell,amount:"111"}), "incremental");
+  assert.equal(conflict.status,400); assert.match(conflict.data.error,/Conflicting/);
+  assert.deepEqual(await portfolioSnapshot(),before);
+  const analysis = (await request("results?start=2025-02-01&end=2025-02-28")).data;
+  assert.equal(analysis.metrics.net_result,6); assert.equal(analysis.metrics.operations,1);
+  assert.equal(analysis.daily.at(-1).cumulative,6);
+  const events = (await request("realizations?start=2025-02-01&end=2025-02-28&page=999&page_size=1")).data;
+  assert.equal(events.page,1); assert.equal(events.total,1); assert.equal(events.revision,analysis.revision);
+  const filtered = (await request("movements?search=ISIN&page_size=1&page=2")).data;
+  assert.equal(filtered.total,2); assert.equal(filtered.items.length,1);
+  const response = await browserWindow.fetch(`/api/analysis_csv?start=2025-02-01&end=2025-02-28&revision=${analysis.revision}`);
+  assert.equal(response.status,200); const text=await response.text();
+  assert.match(text, /gross_proceeds/); assert.match(text, /result-sell/); assert.doesNotMatch(text,/result-buy/);
+  assert.equal((await request("results?start=2025-02-30")).status,400);
+  assert.equal((await request("results?revision=outdated")).status,409);
+});
+
+test("backup restore atomically replaces complete state, preserves service key and recovers prior revision", async () => {
+  await request("finnhub_key","POST",{key:"device-secret"});
+  await request("settings","POST",{projection_active_days_per_week:4});
+  const backup=(await request("backup")).data;
+  assert.ok(!JSON.stringify(backup).includes("device-secret"));
+  const original=(await request("summary")).data;
+  await upload(csv({...deposit,transaction_id:"replacement",amount:"500"}));
+  await request("prices","POST",{isin:"NEW",price:42});
+  const previous=await portfolioSnapshot();
+  const invalid={...backup,version:999};
+  assert.equal((await request("backup_restore","POST",invalid)).status,400);
+  assert.deepEqual(await portfolioSnapshot(),previous);
+  failWriteKey="portfolio";
+  try { assert.equal((await request("backup_restore","POST",backup)).status,500); assert.deepEqual(await portfolioSnapshot(),previous); }
+  finally { failWriteKey=null; }
+  const restored=await request("backup_restore","POST",backup);
+  assert.equal(restored.status,200); assert.deepEqual((await request("summary")).data,original);
+  assert.equal((await request("prices")).data.NEW,undefined);
+  assert.equal((await request("finnhub_key")).data.key,"device-secret");
+  const oldRevision=restored.data.revision;
+  const recovered=await request("recover_previous","POST");
+  assert.equal(recovered.status,200); assert.notEqual(recovered.data.revision,oldRevision);
+  assert.deepEqual((await request("summary")).data,previous.summary.data);
+  assert.equal((await request("prices")).data.NEW.price,42);
+  assert.equal((await request(`analysis_csv?revision=${oldRevision}`)).status,409);
 });

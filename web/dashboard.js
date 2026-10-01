@@ -35,6 +35,7 @@ window.exportDashboardPdf = async function () {
   const button = document.getElementById("export-pdf-btn");
   const status = document.getElementById("pdf-export-status");
   if (!button || button.disabled || pdfExportInProgress || !dashboardHasData) return;
+  if (document.getElementById('results-analysis') && !resultsState.analysis) return;
 
   if (!window.KlarwertReport || typeof window.KlarwertReport.exportDashboardPdf !== "function") {
     if (status) {
@@ -57,9 +58,10 @@ window.exportDashboardPdf = async function () {
   try {
     const result = window.KlarwertNative?.isNative && typeof window.KlarwertNative.sharePdf === "function"
       ? await window.KlarwertReport.exportDashboardPdf({
+        analysis: resultsState.analysis ? structuredClone(resultsState.analysis) : undefined,
         shareBase64: (filename, base64) => window.KlarwertNative.sharePdf(filename, base64),
       })
-      : await window.KlarwertReport.exportDashboardPdf({});
+      : await window.KlarwertReport.exportDashboardPdf({ analysis: resultsState.analysis ? structuredClone(resultsState.analysis) : undefined });
     if (status) status.textContent = result?.shared ? "PDF ready to share." : "PDF downloaded.";
   } catch (error) {
     console.error("Dashboard PDF export failed:", error);
@@ -72,6 +74,7 @@ window.exportDashboardPdf = async function () {
     pdfExportInProgress = false;
     if (button) {
       button.disabled = false;
+      if (document.getElementById('results-analysis') && !resultsState.analysis) button.disabled = true;
       button.removeAttribute("aria-busy");
     }
   }
@@ -200,12 +203,16 @@ status.textContent = "Loading...";
 try {
 const form = new FormData();
 form.append("file", file);
+if (resultsEl('replace')?.checked) {
+  if (!confirm('Replace all imported history with this complete statement? The previous revision remains recoverable.')) return;
+  form.append('mode', 'replace');
+}
 const r = await fetch(`${BASE}/api/upload`, { method: "POST", body: form });
 const data = await r.json();
 if (!data.ok) throw new Error(data.error);
+await loadResults();
 await loadAllData();
-status.textContent = `Loaded ${data.count} transactions from ${data.filename}.`;
-setTimeout(() => status.textContent = "", 4000);
+status.textContent = `Imported ${data.added ?? data.count} new movements; ${data.duplicates ?? 0} duplicates ignored. ${data.count} total · revision ${data.revision ?? 'legacy'}.`;
 } catch (e) {
 status.textContent = `Failed: ${e.message}`;
 } finally {
@@ -1789,6 +1796,7 @@ function updateRefreshStatus() {
 })();
 
 function resizeAllCharts() {
+  resultsState.curve?.resize(); resultsState.bars?.resize();
   [cashFlowChart, weeklyPLChart, plEvolutionChart,
    allocationChart, dividendChart, incomeChart, spendingCatChart, spendingMonthChart]
     .forEach(c => { if (c) c.resize(); });
@@ -1821,6 +1829,7 @@ function initDashGroups() {
   try { saved = JSON.parse(localStorage.getItem(GROUP_STATE_KEY) || "null"); } catch (e) {}
   groups.forEach(g => {
     if (saved && typeof saved[g.id] === "boolean") g.open = saved[g.id];
+    if (g.id === 'group-overview') g.open = false;
     g.addEventListener("toggle", () => { resizeAllCharts(); saveDashGroups(); });
   });
   const expandAll = document.getElementById("expand-all-btn");
@@ -1832,4 +1841,157 @@ function initDashGroups() {
   if (collapseAll) collapseAll.addEventListener("click", () => {
     groups.forEach(g => { g.open = false; });
   });
+}
+
+// A common immutable analysis snapshot drives every results consultation surface.
+const resultsState = { analysis: null, generation: 0, historyGeneration: 0, page: 1, day: null, month: null, curve: null, bars: null };
+const resultsEl = id => document.getElementById(`results-${id}`);
+const resultsMoney = value => value == null ? 'Unavailable' : new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(value);
+const resultsDate = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+function resultsPeriodQuery() {
+  const choice = resultsEl('period').value;
+  if (choice === 'all') return new URLSearchParams();
+  const today = new Date(), start = new Date(today);
+  if (choice === 'week') start.setDate(start.getDate() - (start.getDay()+6)%7);
+  if (choice === 'month') start.setDate(1);
+  if (choice === 'year') start.setMonth(0,1);
+  const from = choice === 'custom' ? resultsEl('start').value : resultsDate(start);
+  const to = choice === 'custom' ? resultsEl('end').value : resultsDate(today);
+  if (!from || !to || from > to) throw new Error('Choose a valid inclusive date range.');
+  return new URLSearchParams({start: from, end: to});
+}
+function resultsSnapshotQuery(analysis = resultsState.analysis) {
+  return new URLSearchParams({...analysis.period, revision: analysis.revision});
+}
+function invalidateResults() {
+  resultsState.generation++; resultsState.historyGeneration++; resultsState.analysis = null;
+  resultsEl('csv').disabled = true;
+  setPdfExportAvailability(false);
+  resultsEl('cards').replaceChildren(); resultsEl('history').replaceChildren();
+  resultsEl('calendar').replaceChildren(); resultsEl('projection').replaceChildren();
+  resultsState.curve?.destroy(); resultsState.bars?.destroy(); resultsState.curve = resultsState.bars = null;
+  if (resultsEl('detail').open) resultsEl('detail').close();
+}
+async function loadResults() {
+  let query;
+  try { query = resultsPeriodQuery(); } catch(e) { resultsEl('status').textContent = e.message; return; }
+  invalidateResults();
+  const generation = resultsState.generation;
+  resultsEl('status').textContent = 'Loading results…';
+  try {
+    const analysis = await loadJSON(`${BASE}/api/results?${query}`);
+    if (generation !== resultsState.generation) return;
+    resultsState.analysis = analysis; resultsState.page = 1; resultsState.day = null;
+    resultsState.month = analysis.period.end.slice(0,7);
+    resultsEl('start').value = analysis.period.start; resultsEl('end').value = analysis.period.end;
+    resultsEl('status').textContent = `${analysis.period.start} – ${analysis.period.end} · revision ${analysis.revision}`;
+    resultsEl('coverage').textContent = `First movement: ${analysis.coverage.first_movement || 'unavailable'} · Last imported movement: ${analysis.coverage.last_movement || 'unavailable'}. ${analysis.coverage.warning || 'Movement dates do not prove complete statement coverage.'}`;
+    const m = analysis.metrics;
+    resultsEl('cards').replaceChildren();
+    for (const [label,value] of [['Known net realized P&L',resultsMoney(m.net_result)],['Operations with result',`${m.operations} (${m.valid_operations} valid)`],['Win rate',m.win_rate == null ? 'Unavailable' : `${(m.win_rate*100).toFixed(1)}%`],['Average net result',resultsMoney(m.average_result)],['Cost quality',`${m.incomplete_operations} incomplete`],['Dividends',resultsMoney(analysis.income.dividends)],['Interest',resultsMoney(analysis.income.interest)]]) {
+      const card = document.createElement('div'); card.className = 'card';
+      const title = document.createElement('div'); title.className = 'label'; title.textContent = label;
+      const val = document.createElement('div'); val.className = 'value'; val.textContent = value; card.append(title,val); resultsEl('cards').append(card);
+    }
+    const prev = analysis.previous;
+    resultsEl('comparison').textContent = prev ? `Previous period ${prev.period.start} – ${prev.period.end}: ${resultsMoney(prev.net_result)}. ${prev.comparable ? `Change ${resultsMoney(m.net_result-prev.net_result)}.` : 'Coverage does not support a complete comparison.'}` : 'No comparable previous period.';
+    renderResultsCharts(); renderResultsCalendar(); await loadResultsHistory();
+    if (generation !== resultsState.generation) return;
+    resultsEl('csv').disabled = false; setPdfExportAvailability(true);
+    const projection = await loadJSON(`${BASE}/api/automatic_projection?revision=${encodeURIComponent(analysis.revision)}`);
+    if (generation === resultsState.generation) renderResultsProjection(projection);
+  } catch(e) { if (generation === resultsState.generation) resultsEl('status').textContent = `Results unavailable: ${e.message}`; }
+}
+function renderResultsCharts() {
+  const a = resultsState.analysis; if (!a || typeof Chart === 'undefined') return;
+  resultsState.curve?.destroy(); resultsState.bars?.destroy();
+  resultsState.curve = new Chart(resultsEl('curve'), {type:'line',data:{labels:[a.period.start,...a.daily.map(d=>d.date)],datasets:[{label:'Cumulative known net realized EUR',data:[0,...a.daily.map(d=>d.cumulative)],borderColor:CHART_BLUE,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false}});
+  const grouped = new Map();
+  for (const d of a.daily) {
+    let key = d.date;
+    if (resultsEl('aggregation').value === 'month') key = key.slice(0,7);
+    if (resultsEl('aggregation').value === 'week') { const date = new Date(`${key}T12:00:00`); date.setDate(date.getDate()-(date.getDay()+6)%7); key=resultsDate(date); }
+    grouped.set(key,(grouped.get(key)||0)+d.net_result);
+  }
+  resultsState.bars = new Chart(resultsEl('bars'),{type:'bar',data:{labels:[...grouped.keys()],datasets:[{label:'Known net realized EUR',data:[...grouped.values()],backgroundColor:[...grouped.values()].map(v=>v<0?CHART_RED:CHART_GREEN)}]},options:{responsive:true,maintainAspectRatio:false}});
+}
+function renderResultsCalendar() {
+  const a=resultsState.analysis; if(!a)return;
+  const [year,month]=resultsState.month.split('-').map(Number), days=new Date(year,month,0).getDate();
+  resultsEl('month').textContent=resultsState.month; const grid=resultsEl('calendar'); grid.replaceChildren();
+  const offset=(new Date(year,month-1,1).getDay()+6)%7;
+  for(let i=0;i<offset;i++)grid.append(document.createElement('span'));
+  const daily=new Map(a.daily.map(d=>[d.date,d]));
+  for(let i=1;i<=days;i++) {
+    const date=`${resultsState.month}-${String(i).padStart(2,'0')}`, day=daily.get(date), button=document.createElement('button');
+    button.type='button'; button.disabled=date<a.period.start||date>a.period.end;
+    button.textContent=`${i}\n${day?.operations ? resultsMoney(day.net_result) : '—'}\n${day?.operations||0} ops${day?.incomplete?' ?':''}`;
+    button.setAttribute('aria-label',`${date}, ${day?.operations||0} realizations, ${day?.operations?resultsMoney(day.net_result):'no realizations'}, ${day?.incomplete||0} incomplete`);
+    button.addEventListener('click',()=>{resultsState.day=date;resultsState.page=1;resultsEl('history-kind').value='realizations';loadResultsHistory();resultsEl('history').tabIndex=-1;resultsEl('history').focus();}); grid.append(button);
+  }
+}
+async function loadResultsHistory() {
+  const a=resultsState.analysis; if(!a)return;
+  const generation=++resultsState.historyGeneration, query=resultsSnapshotQuery(a), kind=resultsEl('history-kind').value;
+  if(resultsState.day){query.set('start',resultsState.day);query.set('end',resultsState.day);}
+  query.set('search',resultsEl('search').value);query.set('page',String(resultsState.page));query.set('page_size','20');
+  resultsEl('history-count').textContent='Loading history…';
+  try {
+    const page=await loadJSON(`${BASE}/api/${kind}?${query}`);
+    if(generation!==resultsState.historyGeneration||a!==resultsState.analysis||page.revision!==a.revision)return;
+    resultsState.page=page.page;resultsEl('page').textContent=`${page.page} / ${Math.max(page.pages,1)}`;
+    resultsEl('page-prev').disabled=page.page<=1;resultsEl('page-next').disabled=page.page>=page.pages;
+    resultsEl('history-count').textContent=`${page.total} ${kind}${resultsState.day?` on ${resultsState.day}`:''}`;
+    const list=resultsEl('history');list.replaceChildren();
+    if(!page.items.length)list.textContent='No matching movements or realizations.';
+    for(const item of page.items) {
+      const entry=document.createElement('div');entry.className='results-entry';
+      const title=document.createElement(kind==='realizations'?'button':'span');title.textContent=`${item.date} · ${item.name||item.description||item.type} · ${item.isin||item.symbol||''}`;
+      if(kind==='realizations')title.addEventListener('click',()=>openResultsDetail(item,title));
+      const value=document.createElement('span');value.textContent=kind==='realizations'?`${resultsMoney(item.net_result)}${item.cost_quality==='unknown'?' · incomplete':''}`:resultsMoney(item.amount);
+      entry.append(title,value);list.append(entry);
+    }
+  }catch(e){if(generation===resultsState.historyGeneration)resultsEl('history-count').textContent=`History unavailable: ${e.message}`;}
+}
+function openResultsDetail(item, trigger) {
+  const body=resultsEl('detail-body');body.replaceChildren();const dl=document.createElement('dl');
+  for(const [label,value] of [['Product',item.name],['ISIN',item.isin],['Statement date',item.date],['Timestamp',item.datetime],['Movement identity',item.movement_id],['Broker transaction',item.transaction_id],['Event',item.kind],['Shares',item.shares],['Gross proceeds',resultsMoney(item.gross_proceeds)],['Gross acquisition cost',resultsMoney(item.gross_cost)],['Acquisition charges',resultsMoney(item.acquisition_charges)],['Exit charges',resultsMoney(item.exit_charges)],['Gross result',resultsMoney(item.gross_result)],['Net result',resultsMoney(item.net_result)],['Known matched subtotal',resultsMoney(item.known_net_result)],['Cost quality',item.cost_quality],['Unmatched shares',item.unmatched_shares]]) {const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=String(value??'—');dl.append(dt,dd);}body.append(dl);
+  const heading=document.createElement('h4');heading.textContent='FIFO acquisition lots';body.append(heading);
+  for(const lot of item.lots){const p=document.createElement('p');p.textContent=`${lot.lot_datetime} · ${lot.shares} shares · cost ${resultsMoney(lot.cost_basis)} · proceeds ${resultsMoney(lot.proceeds)}`;body.append(p);}
+  resultsEl('detail').showModal();resultsEl('detail').addEventListener('close',()=>trigger.focus(),{once:true});
+}
+function renderResultsProjection(data) {
+  const root=resultsEl('projection');root.replaceChildren();
+  const paragraph = text => { const p=document.createElement('p');p.textContent=text;root.append(p); };
+  if (!data?.historical) { paragraph('No imported observation window is available.');return; }
+  paragraph(`Reference: last imported movement ${data.as_of}. ${data.coverage_assumption}`);
+  for (const [label,scenario] of [['Available year history',data.historical],['Recent window (up to 60 days)',data.recent]]) {
+    const heading=document.createElement('h4');heading.textContent=label;root.append(heading);
+    paragraph(`${scenario.observed_start} – ${scenario.observed_end}: ${scenario.observation_days} observed calendar days, ${scenario.active_days} days with realizations. Observed window result ${resultsMoney(scenario.observed_pl)}; annual observed result ${resultsMoney(scenario.ytd_pl)}.`);
+    const reason={insufficient_sample:'Insufficient sample: at least 30 observed days and 10 days with realizations are required.',unknown_cost:'Unavailable: the observed year contains unknown acquisition costs.',closed_year:'Year closed: observed results only; no future extrapolation.'}[scenario.status];
+    if(reason)paragraph(reason);
+    else paragraph(`Extrapolated remaining result ${resultsMoney(scenario.projected_remaining_pl)}; annual observed plus extrapolated result ${resultsMoney(scenario.projected_pl)}. Assumes the observed cadence and average result continue for ${scenario.remaining_days} calendar days.`);
+    paragraph(`Formula: ${scenario.formula}. Average per realization day ${resultsMoney(scenario.average_active_day)}; observed cadence ${(scenario.cadence*100).toFixed(1)}% of calendar days.`);
+  }
+}
+async function downloadResultsFile(url,filename) {
+  const response=await fetch(url);if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||`HTTP ${response.status}`);}
+  if(window.KlarwertNative?.isNative && window.KlarwertNative.shareFile) { await window.KlarwertNative.shareFile(filename,await response.text());return; }
+  const blob=await response.blob(),link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+}
+if(resultsEl('period')) {
+  resultsEl('apply').addEventListener('click',loadResults);
+  resultsEl('aggregation').addEventListener('change',renderResultsCharts);
+  for(const [id,step] of [['month-prev',-1],['month-next',1]])resultsEl(id).addEventListener('click',()=>{const date=new Date(`${resultsState.month}-01T12:00:00`);date.setMonth(date.getMonth()+step);resultsState.month=resultsDate(date).slice(0,7);renderResultsCalendar();});
+  for(const id of ['search-apply','history-kind','clear-day'])resultsEl(id).addEventListener(id==='history-kind'?'change':'click',()=>{resultsState.page=1;if(id==='clear-day')resultsState.day=null;loadResultsHistory();});
+  resultsEl('search').addEventListener('keydown',e=>{if(e.key==='Enter'){resultsState.page=1;loadResultsHistory();}});
+  for(const [id,step]of [['page-prev',-1],['page-next',1]])resultsEl(id).addEventListener('click',()=>{resultsState.page+=step;loadResultsHistory();});
+  resultsEl('detail-close').addEventListener('click',()=>resultsEl('detail').close());
+  resultsEl('csv').addEventListener('click',async()=>{const a=resultsState.analysis;if(!a)return;try{await downloadResultsFile(`${BASE}/api/analysis_csv?${resultsSnapshotQuery(a)}`,`klarwert-analysis-${a.period.start}-${a.period.end}.csv`);}catch(e){resultsEl('status').textContent=e.message;}});
+  resultsEl('backup').addEventListener('click',async()=>{try{await downloadResultsFile(`${BASE}/api/backup`,'klarwert-backup.json');}catch(e){resultsEl('status').textContent=e.message;}});
+  resultsEl('restore').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;await restoreResultsBackup(await file.text());e.target.value='';});
+  async function restoreResultsBackup(text) {if(!confirm('Restore this backup as the complete portfolio? The previous revision remains recoverable.'))return;try{const response=await fetch(`${BASE}/api/backup_restore`,{method:'POST',headers:{'Content-Type':'application/json'},body:text});const data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||'Restore failed');await loadResults();await loadAllData();resultsEl('status').textContent=`Backup restored · revision ${data.revision}`;}catch(error){resultsEl('status').textContent=error.message;}finally{resultsEl('restore').value='';}}
+  if(window.KlarwertNative?.isNative && window.KlarwertNative.pickConfig) { const button=document.createElement('button');button.textContent='Restore backup file';resultsEl('restore').hidden=true;resultsEl('restore').parentElement.append(button);button.addEventListener('click',async()=>{try{const picked=await window.KlarwertNative.pickConfig();if(picked)await restoreResultsBackup(picked.content);}catch(e){resultsEl('status').textContent=e.message;}}); }
+  resultsEl('recover').addEventListener('click',async()=>{if(!confirm('Recover the previous complete portfolio revision?'))return;try{const response=await fetch(`${BASE}/api/recover_previous`,{method:'POST'});const data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||'Recovery failed');await loadResults();await loadAllData();}catch(e){resultsEl('status').textContent=e.message;}});
+  loadResults();
 }

@@ -97,9 +97,11 @@ export function compute_performance(df: Row[], result: EngineResult, options: Pe
   const flows: Flow[] = df.filter(r => ["DEPOSIT", "WITHDRAWAL", "CARD"].includes(r.tx_type)).map(r => ({d:r.datetime, amount:-nz(r.amount)}));
   const rateAt = (value: number | null) => value !== null && asOf ? xirr([...flows, {d:asOf,amount:value}]) : null;
   const rate = rateAt(valuation_complete ? marketTerminal : null), costRate = rateAt(Number.isFinite(costTerminal) ? costTerminal : null);
-  const wins = result.closed_positions.filter(c => c.total_realized_pl > 0).map(c => c.total_realized_pl);
-  const losses = result.closed_positions.filter(c => c.total_realized_pl < 0).map(c => c.total_realized_pl);
-  const total_closed = wins.length + losses.length;
+  const realizedValues = result.realization_events
+    ? result.realization_events.filter(e => e.cost_quality === "known" && e.net_result !== null).map(e => roundTo(e.net_result!, 2))
+    : result.closed_positions.map(c => roundTo(c.total_realized_pl, 2));
+  const wins = realizedValues.filter(v => v > 0), losses = realizedValues.filter(v => v < 0);
+  const total_closed = realizedValues.length;
   return {
     xirr: rate !== null ? roundTo(rate, 4) : null,
     xirr_total: rate !== null ? roundTo(rate, 4) : null,

@@ -1,4 +1,6 @@
 export interface Row {
+  /** Stable ledger occurrence identity, independent of the original broker ID. */
+  movement_id?: string;
   datetime: Date;
   date: string;
   category: string;
@@ -83,6 +85,7 @@ export interface Product {
 }
 
 export interface EngineResult {
+  realization_events?: RealizationEvent[];
   summary: Record<string, any>;
   open_positions: OpenPosition[];
   closed_positions: ClosedPosition[];
@@ -92,6 +95,32 @@ export interface EngineResult {
   monthly_pl: Array<{ month: string; realized_pl: number }>;
   daily_pl: Array<{ date: string; realized_pl: number }>;
   lot_matches: LotMatch[];
+}
+
+export interface AnalysisPeriod { start: string; end: string; }
+export interface PageRequest { page?: number; page_size?: number; search?: string; }
+export interface PageResult<T> { items: T[]; total: number; page: number; page_size: number; pages: number; }
+export interface RealizationEvent {
+  id: string; movement_id: string; transaction_id: string;
+  date: string; datetime: string; kind: "sale" | "redemption" | "extinction" | "legacy_cover";
+  isin: string; name: string; shares: number;
+  gross_proceeds: number; gross_cost: number; acquisition_charges: number;
+  exit_charges: number; gross_result: number; net_result: number | null;
+  known_net_result: number; cost_quality: "known" | "unknown";
+  unmatched_shares: number; lots: LotMatch[];
+}
+export interface DailyAnalysis {
+  date: string; net_result: number; cumulative: number; operations: number; incomplete: number;
+}
+export interface ResultsAnalysis {
+  revision: string; period: AnalysisPeriod;
+  coverage: { first_movement: string | null; last_movement: string | null; complete: boolean; warning: string };
+  metrics: { net_result: number; operations: number; valid_operations: number; incomplete_operations: number;
+    wins: number; losses: number; zeros: number; win_rate: number | null;
+    average_win: number | null; average_loss: number | null; average_result: number | null; profit_factor: number | null };
+  daily: DailyAnalysis[]; realizations: RealizationEvent[];
+  income: { dividends: number; interest: number };
+  previous: { period: AnalysisPeriod; net_result: number; comparable: boolean } | null;
 }
 
 export interface CardRule {

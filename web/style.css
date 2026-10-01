@@ -36,6 +36,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html {
   /* Keep the document inside the visual viewport after a phone rotates. */
@@ -512,3 +513,23 @@ tbody tr:nth-child(even):hover { background: var(--bg-elevated); }
 .app-footer a:hover {
   text-decoration: underline;
 }
+
+/* Results consultation keeps values legible on narrow phones. */
+#results-analysis { margin: 20px 0; padding: 16px; border: 1px solid var(--border, #d7dee8); border-radius: 12px; }
+.results-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
+.results-controls label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.results-controls input, .results-controls select { max-width: 100%; min-width: 0; }
+.results-chart { position: relative; height: 220px; min-width: 0; margin: 12px 0; }
+.results-calendar, .results-calendar-head { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.results-calendar button { min-width: 0; padding: 8px 2px; display: flex; flex-direction: column; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.results-calendar-head { text-align: center; font-size: 11px; }
+.results-calendar button:focus-visible, #results-history button:focus-visible { outline: 3px solid #58a6ff; }
+.results-entry { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid #d7dee8; overflow-wrap: anywhere; }
+.results-entry button { white-space: normal; text-align: left; flex: 1; min-width: 0; }
+.results-entry > span:last-child { flex-shrink: 0; white-space: nowrap; }
+#results-detail { width: min(550px, calc(100vw - 40px)); max-height: 85vh; overflow-y: auto; border-radius: 12px; padding: 16px; background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-color); }
+#results-detail-body { overflow-wrap: anywhere; }
+#results-detail-body dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+#results-detail-body dd { margin: 0; }
+#results-detail::backdrop { background: #0008; }
+@media (max-width: 400px) { #results-analysis { padding: 8px; } #results-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } #results-cards .value { font-size: 19px; overflow-wrap: anywhere; } }
