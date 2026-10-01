@@ -35,5 +35,3 @@ test('calendar distinguishes no realization, zero and incomplete while retaining
  const buttons=h.get('results-calendar').children.filter((c: any)=>c.textContent);
  assert.equal(buttons.length,28);assert.match(buttons[0].textContent,/—/);assert.match(buttons[1].textContent,/0\.00/);assert.match(buttons[2].textContent,/\?/);
 });
-
-
