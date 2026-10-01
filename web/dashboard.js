@@ -118,6 +118,7 @@ const TABLE_CONFIGS = {
 };
 
 async function loadAllData() {
+invalidateTaxReport();
 const [summary, valuedPositions, closedPositions, cashFlow, transactions, products, monthlyPl, dailyPl, annualProjection, settings, derivativeExecutions, cardTransactions, lotMatches, perfData, income, spending, cardRules] = await Promise.all([
 loadJSON(`${BASE}/api/summary`),
 loadJSON(`${BASE}/api/valued_positions`),
@@ -208,7 +209,7 @@ setTimeout(() => status.textContent = "", 4000);
 } catch (e) {
 status.textContent = `Failed: ${e.message}`;
 } finally {
-input.value = "";
+  if (input) input.value = "";
 }
 };
 
@@ -370,15 +371,23 @@ function insertGroupDropdown(table, config, onChange) {
   return select;
 }
 
+function formatShares(value) {
+  if (value == null) return '';
+  const options = value !== 0 && Math.abs(value) < 0.0001
+    ? { maximumSignificantDigits: 6 }
+    : { minimumFractionDigits: 4, maximumFractionDigits: 6 };
+  return value.toLocaleString(undefined, options);
+}
+
 function formatVal(key, val) {
   if (typeof val !== 'number') return val ?? '';
   if (key === 'weight') return `${(val * 100).toFixed(1)}%`;
   if (key === 'yield_on_cost') return val == null ? '' : `${val.toFixed(2)}%`;
-  if (key === 'average_cost' || key.endsWith('_cost') || key === 'total_realized_pl' || key === 'total_invested' || key === 'total_dividends' || key === 'total_dividend_tax' || key === 'total_dividends_net' || key === 'total_fees' || key === 'amount' || key === 'price' || key === 'ko_total' || key === 'warrant_return' || key === 'net_result' || key === 'proceeds' || key === 'cost_basis' || key === 'pl' || key === 'market_value' || key === 'unrealized_pl' || key === 'market_price' || key === 'gross' || key === 'wht' || key === 'net') {
+   if (key === 'average_cost' || key.endsWith('_cost') || key === 'total_realized_pl' || key === 'total_invested' || key === 'total_dividends' || key === 'total_dividend_tax' || key === 'total_dividends_net' || key === 'total_fees' || key === 'fees' || key === 'amount' || key === 'price' || key === 'ko_total' || key === 'warrant_return' || key === 'net_result' || key === 'proceeds' || key === 'cost_basis' || key === 'pl' || key === 'market_value' || key === 'unrealized_pl' || key === 'market_price' || key === 'gross' || key === 'wht' || key === 'net') {
     return `\u20AC${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
   }
   if (key === 'shares' || key === 'total_shares_sold') {
-    return val.toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 4});
+    return formatShares(val);
   }
   return val.toLocaleString();
 }
@@ -425,7 +434,9 @@ if (!p || Object.keys(p).length === 0) return;
 const container = document.getElementById("summary-cards");
 const eur = v => v == null ? "N/A" : `\u20AC${v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 const cards = [
-  { label: "XIRR (annualized)", value: p.xirr == null ? "N/A" : `${(p.xirr * 100).toFixed(2)}%` },
+  { label: "Investment XIRR (est., annualized)", value: p.xirr_total == null ? "N/A — incomplete valuation or duration" : `${(p.xirr_total * 100).toFixed(2)}%` },
+  { label: "XIRR at cost (annualized)", value: p.xirr_at_cost == null ? "N/A" : `${(p.xirr_at_cost * 100).toFixed(2)}%` },
+  { label: "Valuation date (saved quotes)", value: p.as_of ? new Date(p.as_of).toLocaleDateString() : "N/A" },
   { label: "Win Rate (closed)", value: p.win_rate == null ? "N/A" : `${p.win_rate}% (${p.winners}W/${p.losers}L)` },
   { label: "Avg Win", value: eur(p.avg_win), cls: "positive" },
   { label: "Avg Loss", value: eur(p.avg_loss), cls: "negative" },
@@ -727,7 +738,7 @@ tr.innerHTML = `
 <td>${t.type}</td>
 <td>${t.name || ""}</td>
 <td>${t.symbol || ""}</td>
-<td class="num">${t.shares?.toLocaleString(undefined, {minimumFractionDigits: 4}) || ""}</td>
+<td class="num">${formatShares(t.shares)}</td>
 <td class="num">${t.price != null ? `\u20AC${t.price.toLocaleString(undefined, {minimumFractionDigits: 2})}` : ""}</td>
 <td class="num">${t.amount != null ? `\u20AC${t.amount.toLocaleString(undefined, {minimumFractionDigits: 2})}` : ""}</td>
 `;
@@ -1529,42 +1540,79 @@ function renderCardRules(data) {
 }
 
 let lastTaxReport = null;
+let taxReportGeneration = 0;
+
+function invalidateTaxReport() {
+  lastTaxReport = null;
+  taxReportGeneration += 1;
+  const button = document.getElementById("tax-csv-btn");
+  if (button) button.disabled = true;
+  for (const id of ["tax-disposals-table", "tax-income-table"]) {
+    const tbody = document.querySelector(`#${id} tbody`);
+    if (tbody) tbody.innerHTML = "";
+  }
+  const status = document.getElementById("tax-status");
+  if (status) status.textContent = "Load a report for the current portfolio before exporting.";
+}
+
+function csvCell(value) {
+  const text = value == null ? "" : String(value);
+  return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function taxIncomeRows(report) {
+  const dividends = report.dividend_totals;
+  const interest = report.interest_totals || { gross: report.interest, wht: 0, fees: 0, net: report.interest };
+  const saveback = report.saveback_totals || { gross: report.saveback, wht: 0, fees: 0, net: report.saveback };
+  return [
+    ["Dividends", dividends.gross, dividends.wht, dividends.fees || 0, dividends.net],
+    ["Interest", interest.gross, interest.wht, interest.fees, interest.net],
+    ["Saveback", saveback.gross, saveback.wht, saveback.fees, saveback.net],
+  ];
+}
 
 window.loadTaxReport = async function () {
 const yearInput = document.getElementById("tax-year");
 if (!yearInput.value) yearInput.value = new Date().getFullYear();
+invalidateTaxReport();
+const generation = taxReportGeneration;
+const status = document.getElementById("tax-status");
+try {
 const report = await loadJSON(`${BASE}/api/tax_report?year=${yearInput.value}`);
+if (generation !== taxReportGeneration) return;
 lastTaxReport = report;
 renderTable("tax-disposals-table", report.disposals, null);
 const tbody = document.querySelector("#tax-income-table tbody");
 tbody.innerHTML = "";
-const eur = v => `\u20AC${(v || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-const t = report.dividend_totals;
-[
-  ["Dividends", t.gross, t.wht, t.net],
-  ["Interest", report.interest, 0, report.interest],
-  ["Saveback", report.saveback, 0, report.saveback],
-].forEach(([label, g, w, n]) => {
+const eur = v => Number.isFinite(v) ? `\u20AC${v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : "N/A";
+taxIncomeRows(report).forEach(([label, g, w, f, n]) => {
   const tr = document.createElement("tr");
-  tr.innerHTML = `<td>${label}</td><td class="num">${eur(g)}</td><td class="num">${eur(w)}</td><td class="num">${eur(n)}</td>`;
+  tr.innerHTML = `<td>${label}</td><td class="num">${eur(g)}</td><td class="num">${eur(w)}</td><td class="num">${eur(f)}</td><td class="num">${eur(n)}</td>`;
   tbody.appendChild(tr);
 });
+const button = document.getElementById("tax-csv-btn");
+if (button) button.disabled = false;
+if (status) status.textContent = `Report for ${report.year} loaded.`;
+} catch (error) {
+  if (generation === taxReportGeneration && status) status.textContent = `Could not load report: ${error.message}`;
+}
 };
 
 window.downloadTaxCsv = async function () {
 if (!lastTaxReport) return;
 const lines = ["date;name;isin;shares;proceeds;cost_basis;fees;gain;acquired"];
 lastTaxReport.disposals.forEach(d => {
-  lines.push([d.date, d.name, d.isin, d.shares, d.proceeds, d.cost_basis, d.fees, d.gain, d.acquired].join(";"));
+  lines.push([d.date, d.name, d.isin, d.shares, d.proceeds, d.cost_basis, d.fees, d.gain, d.acquired].map(csvCell).join(";"));
 });
 lines.push("");
-lines.push("type;gross;wht;net");
-lines.push(`dividends;${lastTaxReport.dividend_totals.gross};${lastTaxReport.dividend_totals.wht};${lastTaxReport.dividend_totals.net}`);
-lines.push(`interest;${lastTaxReport.interest};;${lastTaxReport.interest}`);
-lines.push(`saveback;${lastTaxReport.saveback};;${lastTaxReport.saveback}`);
-const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+lines.push("type;gross;wht;fees;net");
+taxIncomeRows(lastTaxReport).forEach(([label, ...values]) => {
+  lines.push([label.toLowerCase(), ...values].map(csvCell).join(";"));
+});
+const text = lines.join("\r\n");
+const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
 if (window.KlarwertNative && window.KlarwertNative.isNative) {
-  await window.KlarwertNative.shareFile(`tax_report_${lastTaxReport.year}.csv`, lines.join("\n"));
+  await window.KlarwertNative.shareFile(`tax_report_${lastTaxReport.year}.csv`, text);
   return;
 }
 const a = document.createElement("a");
@@ -1575,7 +1623,7 @@ a.click();
 
 function renderValuedCards(totals, positions) {
 const container = document.getElementById("summary-cards");
-const eur = v => `\u20AC${(v || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+const eur = v => Number.isFinite(v) ? `\u20AC${v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : "N/A";
 const top5 = (positions || [])
   .map(p => p.weight || 0)
   .sort((a, b) => b - a)
@@ -1583,7 +1631,8 @@ const top5 = (positions || [])
   .reduce((a, b) => a + b, 0);
 [
   { label: "Est. Market Value", value: eur(totals.market_value) },
-  { label: "Unrealized P&L", value: eur(totals.unrealized_pl), cls: (totals.unrealized_pl || 0) >= 0 ? "positive" : "negative" },
+  { label: "Unrealized P&L", value: eur(totals.unrealized_pl), cls: totals.unrealized_pl == null ? "" : totals.unrealized_pl >= 0 ? "positive" : "negative" },
+  { label: "Quote coverage", value: `${totals.priced_positions ?? positions.filter(p => p.market_price != null).length}/${totals.total_positions ?? positions.length} positions` },
   { label: "Top 5 Concentration", value: `${(top5 * 100).toFixed(1)}%` },
 ].forEach(c => {
   const div = document.createElement("div");
@@ -1591,6 +1640,12 @@ const top5 = (positions || [])
   div.innerHTML = `<div class="label">${c.label}</div><div class="value ${c.cls || ""}">${c.value}</div>`;
   container.appendChild(div);
 });
+if (totals.market_value == null && (totals.priced_positions || 0) > 0) {
+  const div = document.createElement("div");
+  div.className = "card";
+  div.innerHTML = `<div class="label">Quoted positions subtotal</div><div class="value">${eur(totals.quoted_market_value)}</div>`;
+  container.appendChild(div);
+}
 }
 
 function renderPriceInputs(positions) {
@@ -1599,7 +1654,11 @@ container.innerHTML = "";
 positions.forEach(p => {
   const row = document.createElement("div");
   row.style.marginBottom = "6px";
-  row.innerHTML = `<span style="display:inline-block; width:320px;">${p.name} (${p.isin})</span>`;
+   const label = document.createElement("span");
+   label.style.cssText = "display:inline-block; width:320px;";
+   label.textContent = `${p.name} (${p.isin})`;
+   if (p.market_price != null) label.title = p.quoted_at ? `Saved quote: ${new Date(p.quoted_at).toLocaleString()}` : "Saved quote date unavailable; update the price for a current estimate.";
+   row.appendChild(label);
   const input = document.createElement("input");
   input.type = "number";
   input.step = "0.0001";
@@ -1607,13 +1666,26 @@ positions.forEach(p => {
   input.placeholder = "price";
   if (p.market_price != null) input.value = p.market_price;
   input.addEventListener("change", async () => {
-    const price = input.value === "" ? null : parseFloat(input.value);
-    await fetch(`${BASE}/api/prices`, {
+    const price = input.value === "" ? null : Number(input.value);
+    const status = document.getElementById("price-status");
+    if (!input.checkValidity() || (price !== null && (!Number.isFinite(price) || price < 0))) {
+      if (status) status.textContent = "Price must be a finite, non-negative number.";
+      input.reportValidity();
+      return;
+    }
+    try {
+    const response = await fetch(`${BASE}/api/prices`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isin: p.isin, price }),
     });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Could not save price");
     await loadAllData();
+    if (status) status.textContent = "Price saved.";
+    } catch (error) {
+      if (status) status.textContent = error.message;
+    }
   });
   row.appendChild(input);
   container.appendChild(row);
@@ -1735,6 +1807,7 @@ function scheduleChartResize() {
 }
 window.addEventListener("resize", scheduleChartResize, { passive: true });
 window.addEventListener("orientationchange", scheduleChartResize, { passive: true });
+document.getElementById("tax-year")?.addEventListener("input", invalidateTaxReport);
 
 function saveDashGroups() {
   const state = {};

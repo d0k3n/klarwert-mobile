@@ -51,3 +51,12 @@ test("annual P/L projection is absent without current-year realized activity", (
     { date: "2023-12-31", realized_pl: 100 },
   ], new Date(2024, 5, 1, 12)), null);
 });
+
+test("zero-profit disposal days count in the active-day projection", () => {
+  const projection=computeAnnualPLProjection([{date:"2026-01-02",realized_pl:100},{date:"2026-01-03",realized_pl:0}],new Date(2026,0,4,12),3);
+  assert.ok(projection);
+  assert.equal(projection.active_days,2);
+  assert.equal(projection.average_active_day,50);
+  assert.equal(projection.positive_day_rate,50);
+  assert.equal(projection.projected_pl,7835.71);
+});

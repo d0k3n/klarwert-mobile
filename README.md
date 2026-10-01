@@ -18,10 +18,11 @@ your data never leaves the phone.
 | `app.py` (Flask API) | `src/api.ts` (fetch interceptor serving the same `/api/*` routes in-memory) |
 | `templates/`, `static/` | `web/` (same UI, adapted for Capacitor) |
 
-The engine output is verified against the Python implementation: `tests/`
-contains ported unit tests plus a full parity test that compares every
-endpoint result against a reference dump of the original engine on a
-903-transaction dataset (FIFO matches, tax reports, P&L, spending, income).
+The tests retain the original Python reference for the 903-transaction dataset.
+Accounting corrections have explicit expected values and conservation checks,
+including FIFO quantities, gross settlement amounts, cash and fiscal totals.
+See [docs/ACCOUNTING_VALIDATION.md](docs/ACCOUNTING_VALIDATION.md) for the
+corrections, import contract and validation results.
 
 ## Project layout
 

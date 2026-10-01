@@ -27,7 +27,8 @@ const PRECISION_TABLE = new Map<number, number>([
  */
 export function roundTo(val: number, decimals: number): number {
   const f = PRECISION_TABLE.get(decimals) ?? 10 ** decimals;
-  return Math.round((val + Number.EPSILON) * f) / f;
+  const scaled = (val + Number.EPSILON) * f;
+  return Number.isFinite(scaled) ? Math.round(scaled) / f : val;
 }
 
 export function fmtYM(d: Date): string {
@@ -77,4 +78,24 @@ export function normalize(s: unknown): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+/** Stable identity in the original input order, including operations without IDs. */
+export function operationIdentity(row: { transaction_id?: string }, index: number): string {
+  return row.transaction_id?.trim() || `@row:${index}`;
+}
+
+/** Signed imports preserve cash debits and refunds. Legacy income reversals
+ * reverse their associated charges too.
+ * Positive charges remain supported for manually entered / legacy gross rows.
+ */
+export function chargeExpense(row: { tx_type: string; amount: number | null; charges_signed?: boolean }, value: number | null | undefined): number {
+  if (row.charges_signed) return -nz(value);
+  const reversal = ["DIVIDEND", "INTEREST", "SAVEBACK", "TILG"].includes(row.tx_type) && nz(row.amount) < 0;
+  return (reversal ? -1 : 1) * Math.abs(nz(value));
+}
+
+/** Gross settlement amount is authoritative; displayed unit prices can be rounded. */
+export function tradeGross(row: { amount: number | null; shares: number | null; price: number | null }): number {
+  return isna(row.amount) ? Math.abs(nz(row.shares) * nz(row.price)) : Math.abs(nz(row.amount));
 }

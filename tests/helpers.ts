@@ -30,6 +30,7 @@ export function makeDf(rows: Array<Record<string, any>>): Row[] {
     payment_reference: "",
     mcc_code: r.mcc_code ?? "",
     knocked: r.knocked,
+    charges_signed: r.charges_signed,
   }));
 }
 
@@ -56,7 +57,7 @@ export function deepCompare(expected: any, actual: any, path = "", diffs: Diff[]
   }
   if (typeof expected === "number" && typeof actual === "number") {
     const diff = Math.abs(expected - actual);
-    const rel = Math.abs(expected) > 1e6 ? diff / Math.abs(expected) : 0;
+    const rel = Math.abs(expected) > 1e6 ? diff / Math.abs(expected) : Infinity;
     if (!(diff <= 0.011 || rel <= 1e-9)) {
       diffs.push({ path, expected, actual });
     }

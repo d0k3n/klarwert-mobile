@@ -23,14 +23,20 @@ export interface Row {
   payment_reference: string;
   mcc_code: string;
   knocked?: boolean;
+  /** Imported fee/tax are signed cash movements, separate from gross amount. */
+  charges_signed?: boolean;
 }
 
 export interface LotMatch {
   isin: string;
   name: string;
   sell_id: string;
+  sell_key?: string;
   sell_datetime: string;
   lot_datetime: string;
+  lot_key?: string;
+  /** Disposal charges from the original short sale, when covered by a buy. */
+  disposal_fees?: number;
   shares: number;
   proceeds: number;
   cost_basis: number;
@@ -44,9 +50,12 @@ export interface OpenPosition {
   shares: number;
   average_cost: number;
   total_cost: number;
+  /** Exact FIFO cost for aggregation; total_cost remains rounded for display. */
+  total_cost_raw?: number;
   weight?: number;
   market_price?: number | null;
   market_value?: number | null;
+  market_value_raw?: number | null;
   unrealized_pl?: number | null;
 }
 

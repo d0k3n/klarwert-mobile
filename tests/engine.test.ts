@@ -382,24 +382,25 @@ test("zero price unmatched sell leaves no short", () => {
   assert.equal(run_engine(df).open_positions.length, 0);
 });
 
-test("dust lot cost booked on sell", () => {
+test("real fractional lot remains after a partial sell", () => {
   const df = makeDf([
     { datetime: dt("2025-06-01"), tx_type: "BUY", name: "X", symbol: "X", asset_class: "STOCK", shares: 10.0005, price: 100, amount: -1000.05, fee: 0, tax: 0 },
     { datetime: dt("2025-07-01"), tx_type: "SELL", name: "X", symbol: "X", asset_class: "STOCK", shares: 10, price: 100, amount: 1000, fee: 0, tax: 0 },
   ]);
   const result = run_engine(df);
-  assert.equal(result.open_positions.length, 0);
-  assert.ok(Math.abs(result.closed_positions[0].total_realized_pl - -0.05) < 0.011);
+  assert.ok(Math.abs(result.open_positions[0].shares - 0.0005) < 1e-12);
+  assert.equal(result.open_positions[0].total_cost, 0.05);
+  assert.ok(Math.abs(result.closed_positions[0].total_realized_pl) < 1e-9);
 });
 
-test("leftover dust written off at last event", () => {
+test("small holdings retain real quantity and cost", () => {
   const df = makeDf([
     { datetime: dt("2025-06-01"), tx_type: "BUY", name: "X", symbol: "X", asset_class: "STOCK", shares: 0.0005, price: 1000, amount: -0.5, fee: 0, tax: 0 },
   ]);
   const result = run_engine(df);
-  assert.equal(result.open_positions.length, 0);
-  assert.ok(Math.abs(result.closed_positions[0].total_realized_pl - -0.5) < 0.011);
-  assert.deepEqual(result.monthly_pl, [{ month: "2025-06", realized_pl: -0.5 }]);
+  assert.ok(Math.abs(result.open_positions[0].shares - 0.0005) < 1e-12);
+  assert.equal(result.open_positions[0].total_cost, 0.5);
+  assert.deepEqual(result.monthly_pl, []);
 });
 
 test("dividend withholding tax fields", () => {
@@ -513,7 +514,10 @@ test("lot matches for knocked and tilg", () => {
   ]);
   const matches = run_engine(df).lot_matches;
   const ko = matches.filter((m) => m.isin === "DE200");
-  assert.equal(ko.length, 1);
+  assert.equal(ko.length, 2);
+  assert.equal(ko[1].shares, 0);
+  assert.equal(ko[1].proceeds, 50);
+  assert.equal(ko[1].cost_basis, 0);
   assert.equal(ko[0].proceeds, 0);
   assert.equal(ko[0].pl, -500);
   const tilg = matches.filter((m) => m.isin === "DE201");
@@ -537,13 +541,16 @@ test("apply prices computes unrealized", () => {
   assert.equal(b.market_price, null);
   assert.equal(b.market_value, null);
   assert.equal(b.unrealized_pl, null);
-  assert.equal(valued.totals.market_value, 600);
-  assert.equal(valued.totals.unrealized_pl, 100);
+  assert.equal(valued.totals.market_value, null);
+  assert.equal(valued.totals.unrealized_pl, null);
+  assert.equal(valued.totals.quoted_market_value, 600);
+  assert.equal(valued.totals.quoted_unrealized_pl, 100);
+  assert.equal(valued.totals.coverage, 0.5);
 });
 
 test("apply prices empty prices", () => {
   const valued = apply_prices([{ isin: "A", name: "A", asset_class: "STOCK", shares: 1, average_cost: 10, total_cost: 10 }], {});
-  assert.equal(valued.totals.market_value, 0);
+  assert.equal(valued.totals.market_value, null);
   assert.equal(valued.positions[0].market_price, null);
 });
 
@@ -582,7 +589,7 @@ test("compute income monthly and history", () => {
   assert.equal(d.gross, 10);
   assert.equal(d.wht, 1.5);
   assert.equal(d.net, 8.5);
-  assert.equal(d.currency, "USD");
+  assert.equal(d.currency, "EUR");
 });
 
 test("yield on cost for open product", () => {

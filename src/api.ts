@@ -39,7 +39,8 @@ const native = Capacitor.isNativePlatform();
 let df: Row[] | null = null;
 let cacheIds: string | null = null;
 let cacheResult: EngineResult | null = null;
-let prices: Record<string, { price: number; source: string }> = {};
+type StoredPrice = { price: number; source: string; quoted_at?: string };
+let prices: Record<string, StoredPrice> = {};
 let tickers: Record<string, string> = {};
 let cardRules: CardRule[] = [];
 let userSettings: UserSettings = { ...DEFAULT_USER_SETTINGS };
@@ -79,11 +80,7 @@ async function fsWrite(name: string, data: string): Promise<void> {
     await Filesystem.writeFile({ path: name, data, directory: Directory.Data, encoding: Encoding.UTF8 });
     return;
   }
-  try {
-    localStorage.setItem("klarwert:" + name, data);
-  } catch {
-    // ignore quota errors in browser preview
-  }
+  localStorage.setItem("klarwert:" + name, data);
 }
 
 async function prefGet(key: string): Promise<string | null> {
@@ -110,14 +107,25 @@ async function prefSet(key: string, value: string): Promise<void> {
   }
 }
 
-function normalizePrices(raw: Record<string, unknown> | null): Record<string, { price: number; source: string }> {
-  const out: Record<string, { price: number; source: string }> = {};
-  if (!raw) return out;
+function validPrice(value: unknown): number | null {
+  if (typeof value !== "number" && (typeof value !== "string" || value.trim() === "")) return null;
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : null;
+}
+
+function normalizePrices(raw: Record<string, unknown> | null): Record<string, StoredPrice> {
+  const out: Record<string, StoredPrice> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
   for (const [k, v] of Object.entries(raw)) {
     if (v && typeof v === "object" && "price" in (v as any)) {
-      out[k] = { price: Number((v as any).price), source: (v as any).source ?? "manual" };
+      const price = validPrice((v as any).price);
+      if (price === null) continue;
+      out[k] = { price, source: (v as any).source === "auto" ? "auto" : "manual" };
+      const quotedAt = (v as any).quoted_at;
+      if (typeof quotedAt === "string" && Number.isFinite(Date.parse(quotedAt))) out[k].quoted_at = quotedAt;
     } else {
-      out[k] = { price: Number(v), source: "manual" };
+      const price = validPrice(v);
+      if (price !== null) out[k] = { price, source: "manual" };
     }
   }
   return out;
@@ -181,19 +189,35 @@ function invalidateCache(): void {
   cacheResult = null;
 }
 
+function rowsWithKnockFlags(rows: Row[]): Row[] {
+  // Detect with dedicated row keys so a supplied ID cannot alias an anonymous
+  // operation's identity. Manual flags continue to refer to supplied IDs.
+  const auto = auto_detect_knocked(rows.map((r, index) => ({ ...r, transaction_id: `@row:${index}` })));
+  return rows.map((row, index) => ({ ...row, knocked: row.tx_type === "BUY" &&
+    (auto.has(`@row:${index}`) || (!!row.transaction_id && knockedIds.has(row.transaction_id))) }));
+}
+
+function evaluateRows(rows: Row[]): EngineResult {
+  const result = run_engine(rowsWithKnockFlags(rows));
+  assertFiniteAccounting(result);
+  return result;
+}
+
+function assertFiniteAccounting(value: unknown, path = "result"): void {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Non-finite accounting value at ${path}`);
+  } else if (Array.isArray(value)) {
+    value.forEach((item, index) => assertFiniteAccounting(item, `${path}[${index}]`));
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) assertFiniteAccounting(item, `${path}.${key}`);
+  }
+}
+
 function computeData(): EngineResult {
   if (!df) return EMPTY_RESULT;
   const ids = [...knockedIds].sort().join(",");
   if (cacheResult !== null && cacheIds === ids) return cacheResult;
-  const d = df.map((r) => ({ ...r }));
-  const auto = auto_detect_knocked(d);
-  const merged = new Set<string>([...knockedIds, ...auto]);
-  if (merged.size > 0) {
-    for (const row of d) {
-      row.knocked = row.tx_type === "BUY" && merged.has(row.transaction_id ?? "");
-    }
-  }
-  const result = run_engine(d);
+  const result = evaluateRows(df);
   cacheResult = result;
   cacheIds = ids;
   return result;
@@ -236,18 +260,22 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         if (!(file instanceof File) || !file.name) return jsonResponse({ ok: false, error: "no file provided" }, 400);
         const raw = await file.text();
         let parsed: Row[];
+        let evaluated: EngineResult;
         try {
           parsed = parseCSV(raw);
+          if (!parsed.length) throw new Error("CSV contains no transactions");
+          evaluated = evaluateRows(parsed);
         } catch (e: any) {
           return jsonResponse({ ok: false, error: `invalid CSV: ${e?.message ?? e}` }, 400);
         }
         try {
           await fsWrite("transactions.csv", raw);
         } catch (e: any) {
-          console.warn(`Could not persist CSV: ${e?.message ?? e}`);
+          return jsonResponse({ ok: false, error: `Could not save CSV: ${e?.message ?? e}` }, 500);
         }
         df = parsed;
-        invalidateCache();
+        cacheResult = evaluated;
+        cacheIds = [...knockedIds].sort().join(",");
         console.info(`Loaded ${parsed.length} transactions from upload ${file.name}`);
         return jsonResponse({ ok: true, count: parsed.length, filename: file.name });
       }
@@ -256,8 +284,12 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const text = await fsRead("transactions.csv");
         if (text === null) return jsonResponse({ ok: false, error: "no CSV loaded" }, 400);
         try {
-          df = parseCSV(text);
-          invalidateCache();
+          const parsed = parseCSV(text);
+          if (!parsed.length) throw new Error("CSV contains no transactions");
+          const evaluated = evaluateRows(parsed);
+          df = parsed;
+          cacheResult = evaluated;
+          cacheIds = [...knockedIds].sort().join(",");
           console.info(`Reloaded ${df.length} transactions`);
           return jsonResponse({ ok: true, count: df.length });
         } catch (e: any) {
@@ -285,14 +317,16 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const isin = String(b.isin ?? "").trim();
         if (!isin) return jsonResponse({ ok: false, error: "missing isin" }, 400);
         const price = b.price;
+        const nextPrices = { ...prices };
         if (price === null || price === undefined) {
-          delete prices[isin];
+          delete nextPrices[isin];
         } else {
-          const v = Number(price);
-          if (Number.isNaN(v)) return jsonResponse({ ok: false, error: "invalid price" }, 400);
-          prices[isin] = { price: v, source: "manual" };
+          const v = validPrice(price);
+          if (v === null) return jsonResponse({ ok: false, error: "price must be a finite, non-negative number" }, 400);
+          nextPrices[isin] = { price: v, source: "manual", quoted_at: new Date().toISOString() };
         }
-        await fsWrite("prices.json", JSON.stringify(prices));
+        await fsWrite("prices.json", JSON.stringify(nextPrices));
+        prices = nextPrices;
         return jsonResponse({ ok: true, prices });
       }
 
@@ -306,16 +340,27 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const result = computeData();
         if (!apiKey) return jsonResponse({ enabled: false, reason: "no_api_key" });
         const out = await refresh_prices(result.open_positions, prices, tickers, apiKey);
-        Object.assign(prices, out.prices);
-        Object.assign(tickers, out.tickers);
-        await fsWrite("prices.json", JSON.stringify(prices));
-        await fsWrite("tickers.json", JSON.stringify(tickers));
+        const nextPrices = normalizePrices({ ...prices, ...out.prices });
+        const nextTickers = { ...tickers, ...out.tickers };
+        await fsWrite("prices.json", JSON.stringify(nextPrices));
+        prices = nextPrices;
+        tickers = nextTickers;
+        // Tickers are a derived lookup cache. Its persistence failure must not
+        // turn a successfully saved valuation into an apparent failed write.
+        try {
+          await fsWrite("tickers.json", JSON.stringify(nextTickers));
+        } catch (e: any) {
+          console.warn(`Could not save ticker cache: ${e?.message ?? e}`);
+        }
         return jsonResponse({ prices: out.prices, skipped: out.skipped });
       }
 
       case "GET valued_positions": {
         const result = computeData();
-        return jsonResponse(apply_prices(result.open_positions, prices));
+        const valued = apply_prices(result.open_positions, prices);
+        return jsonResponse({ ...valued, positions: valued.positions.map(p => ({
+          ...p, quoted_at: p.market_price == null ? null : prices[p.isin]?.quoted_at ?? null,
+        })) });
       }
 
       case "GET closed_positions":
@@ -323,7 +368,12 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
 
       case "GET performance": {
         if (!df) return jsonResponse({});
-        return jsonResponse(compute_performance(df, computeData()));
+        const result = computeData();
+        const valued = apply_prices(result.open_positions, prices);
+        return jsonResponse(compute_performance(df, result, {
+          valuedPositions: valued.positions,
+          ...(result.open_positions.length ? { asOf: new Date() } : {}),
+        }));
       }
 
       case "GET cash_flow":
@@ -378,23 +428,27 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         const b = await readJsonBody(body);
         const txnId = String(b.id ?? "");
         if (!txnId) return jsonResponse({ ok: false, error: "missing id" }, 400);
-        if (knockedIds.has(txnId)) knockedIds.delete(txnId);
-        else knockedIds.add(txnId);
-        await fsWrite("knocked_down.json", JSON.stringify({ ids: [...knockedIds].sort() }));
+        const nextIds = new Set(knockedIds);
+        if (nextIds.has(txnId)) nextIds.delete(txnId);
+        else nextIds.add(txnId);
+        await fsWrite("knocked_down.json", JSON.stringify({ ids: [...nextIds].sort() }));
+        knockedIds = nextIds;
         invalidateCache();
         return jsonResponse({ ok: true, flagged: knockedIds.has(txnId) });
       }
 
       case "GET tax_report": {
-        if (!df) {
+        if (!df?.length) {
           return jsonResponse({
             year: null, disposals: [], disposal_totals: {},
             dividends: [], dividend_totals: {}, interest: 0, saveback: 0,
           });
         }
         let year = Number(query.get("year"));
-        if (!query.get("year") || Number.isNaN(year)) {
+        if (!query.get("year")) {
           year = df.reduce((acc, r) => (r.datetime > acc ? r.datetime : acc), df[0].datetime).getUTCFullYear();
+        } else if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+          return jsonResponse({ ok: false, error: "invalid tax year" }, 400);
         }
         const result = computeData();
         return jsonResponse(build_tax_report(df, result.lot_matches, year));
@@ -405,8 +459,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
 
       case "GET derivative_executions": {
         if (!df) return jsonResponse([]);
-        const merged = new Set([...knockedIds, ...auto_detect_knocked(df)]);
-        return jsonResponse(compute_derivative_executions(df, merged));
+        return jsonResponse(compute_derivative_executions(rowsWithKnockFlags(df), new Set()));
       }
 
       case "GET income":
@@ -479,11 +532,17 @@ declare global {
 const initPromise = initEngine();
 
 const originalFetch = window.fetch.bind(window);
+let mutationQueue: Promise<unknown> = Promise.resolve();
 
 window.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   const path = url.split("?")[0];
   if (path === "/api" || path.startsWith("/api/") || path.startsWith("api/")) {
+    if ((init?.method ?? "GET").toUpperCase() !== "GET") {
+      const response = mutationQueue.then(() => handleApi(url, init));
+      mutationQueue = response.catch(() => undefined);
+      return response;
+    }
     return handleApi(url, init);
   }
   return originalFetch(input, init);

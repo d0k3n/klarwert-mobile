@@ -1,8 +1,10 @@
 import type { Row, EngineResult, LotMatch, OpenPosition, ClosedPosition, Product, CardRule } from "./types.ts";
-import { isna, nz, absnz, roundTo, fmtYM, fmtYMD, isoFormat, sumOf, sumAbs, normalize } from "./util.ts";
+import { isna, nz, roundTo, fmtYM, fmtYMD, isoFormat, sumOf, normalize, operationIdentity, chargeExpense, tradeGross } from "./util.ts";
 
 interface Lot {
   id: number;
+  buy_key?: string;
+  disposal_fees?: number;
   shares: number;
   price: number;
   total_cost: number;
@@ -44,24 +46,24 @@ function emptyClosed(isin: string, name: string): ClosedPosition {
   return { isin, name, total_realized_pl: 0, closed_lots: 0, total_shares_sold: 0 };
 }
 
+// Ignore only floating-point residue with no material monetary value.
+function negligibleQuantity(shares: number, value: number): boolean {
+  return Math.abs(shares) <= 1e-12 && Math.abs(value) <= 1e-8;
+}
+
 function cmpDatetime(a: Date, b: Date): number {
   return a.getTime() - b.getTime();
 }
 
 export function run_engine(df: Row[]): EngineResult {
+  const rowIndices = new Map(df.map((row, index) => [row, index]));
+  const sellIdentity = (row: Row) => operationIdentity(row, rowIndices.get(row)!);
+  const sellKey = (row: Row) => `@row:${rowIndices.get(row)!}`;
   const trades = df
     .filter((r) => r.tx_type === "BUY" || r.tx_type === "SELL")
     .slice()
     .sort((a, b) => cmpDatetime(a.datetime, b.datetime));
   const cash_rows = df.filter((r) => r.tx_type !== "BUY" && r.tx_type !== "SELL");
-
-  const we_dates = new Map<string, Date>();
-  for (const r of df) {
-    if (r.type === "WARRANT_EXERCISE") {
-      const cur = we_dates.get(r.symbol);
-      if (cur === undefined || r.datetime < cur) we_dates.set(r.symbol, r.datetime);
-    }
-  }
 
   const by_isin = new Map<string, Row[]>();
   for (const row of trades) {
@@ -96,6 +98,7 @@ export function run_engine(df: Row[]): EngineResult {
   const per_product = new Map<string, Product>();
   const closed_positions = new Map<string, ClosedPosition>();
   const open_positions: OpenPosition[] = [];
+  let raw_open_cost = 0;
 
   const getClosed = (isin: string, name: string): ClosedPosition => {
     let cp = closed_positions.get(isin);
@@ -123,7 +126,6 @@ export function run_engine(df: Row[]): EngineResult {
     let total_trades = 0;
     let lot_id = 1;
     let open_lots: Lot[] = [];
-    let last_dt: Date | null = null;
 
     const events: Array<{ dt: Date; kind: number; row: Row }> = [];
     for (const row of rows) events.push({ dt: row.datetime, kind: 0, row });
@@ -136,21 +138,27 @@ export function run_engine(df: Row[]): EngineResult {
 
     for (const ev of events) {
       const row = ev.row;
-      last_dt = row.datetime;
 
       if (ev.kind === 1) {
-        const amount = isna(row.amount) ? 0 : Math.abs(nz(row.amount));
+        const amount = nz(row.amount);
+        const disposal_charges = chargeExpense(row, row.fee) + chargeExpense(row, row.tax);
+        total_fees += chargeExpense(row, row.fee);
         const cost = open_lots.reduce((acc, l) => acc + l.total_cost, 0);
         const shares_taken = open_lots.reduce((acc, l) => acc + l.shares, 0);
-        const realized_pl = amount - cost;
+        const realized_pl = amount - cost - disposal_charges;
         const month = fmtYM(row.datetime);
         monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
         daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + realized_pl;
         const cp = getClosed(isin, name);
         cp.total_realized_pl += realized_pl;
-        if (shares_taken > 0.001) {
+        if (shares_taken > 0) {
           cp.closed_lots += 1;
           cp.total_shares_sold += shares_taken;
+        }
+        if (open_lots.length === 0 && (amount !== 0 || disposal_charges !== 0)) {
+          lot_matches.push({ isin, name, sell_id: sellIdentity(row), sell_key: sellKey(row),
+            sell_datetime: isoFormat(row.datetime), lot_datetime: "", shares: 0,
+            proceeds: amount, cost_basis: 0, pl: amount, disposal_fees: disposal_charges });
         }
         for (const l of open_lots) {
           const share_ratio = shares_taken > 0 ? l.shares / shares_taken : 0;
@@ -158,13 +166,16 @@ export function run_engine(df: Row[]): EngineResult {
           lot_matches.push({
             isin,
             name,
-            sell_id: String(row.transaction_id ?? ""),
+            sell_id: sellIdentity(row),
+            sell_key: sellKey(row),
             sell_datetime: isoFormat(row.datetime),
             lot_datetime: isoFormat(l.datetime),
-            shares: roundTo(l.shares, 6),
-            proceeds: roundTo(proceeds_lot, 2),
-            cost_basis: roundTo(l.total_cost, 2),
-            pl: roundTo(proceeds_lot - l.total_cost, 2),
+            lot_key: l.buy_key,
+            shares: l.shares,
+            proceeds: proceeds_lot,
+            cost_basis: l.total_cost,
+            pl: proceeds_lot - l.total_cost,
+            disposal_fees: disposal_charges * share_ratio,
           });
         }
         open_lots = [];
@@ -172,9 +183,10 @@ export function run_engine(df: Row[]): EngineResult {
       }
 
       const shares = nz(row.shares);
-      const price = isna(row.price) ? 0 : Math.abs(nz(row.price));
-      const fee = isna(row.fee) ? 0 : Math.abs(nz(row.fee));
-      const tax = isna(row.tax) ? 0 : Math.abs(nz(row.tax));
+      const gross = tradeGross(row);
+      const price = shares > 0 ? gross / shares : 0;
+      const fee = chargeExpense(row, row.fee);
+      const tax = chargeExpense(row, row.tax);
       const total_cost = shares * price + fee + tax;
 
       if (row.tx_type === "BUY") {
@@ -182,10 +194,10 @@ export function run_engine(df: Row[]): EngineResult {
         total_fees += fee;
         total_trades += 1;
 
-        if (row.knocked === true) {
-          const lot: Lot = { id: lot_id++, shares, price, total_cost, datetime: row.datetime };
+        if (row.knocked === true && !df.some((r) => r.symbol === isin && r.type === "WARRANT_EXERCISE" && r.datetime >= row.datetime)) {
+          const lot: Lot = { id: lot_id++, buy_key: sellKey(row), shares, price, total_cost, datetime: row.datetime };
           const realized_pl = -lot.total_cost;
-          const ko_dt = we_dates.get(isin) ?? row.datetime;
+          const ko_dt = row.datetime;
           const month = fmtYM(ko_dt);
           monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
           daily_pl[fmtYMD(ko_dt)] = (daily_pl[fmtYMD(ko_dt)] ?? 0) + realized_pl;
@@ -199,18 +211,24 @@ export function run_engine(df: Row[]): EngineResult {
             sell_id: "",
             sell_datetime: isoFormat(ko_dt),
             lot_datetime: isoFormat(row.datetime),
-            shares: roundTo(shares, 6),
+            lot_key: sellKey(row),
+            shares: shares,
             proceeds: 0,
-            cost_basis: roundTo(lot.total_cost, 2),
-            pl: roundTo(-lot.total_cost, 2),
+            cost_basis: lot.total_cost,
+            pl: -lot.total_cost,
           });
         } else {
           let to_allocate = shares;
-          while (to_allocate > 0.001 && open_lots.length > 0 && open_lots[0].shares < 0) {
+          while (to_allocate > 0 && open_lots.length > 0 && open_lots[0].shares < 0 &&
+            !negligibleQuantity(to_allocate, Math.max(Math.abs(to_allocate * price),
+              Math.abs(open_lots[0].total_cost * Math.min(to_allocate, -open_lots[0].shares) / -open_lots[0].shares)))) {
             const neg = open_lots[0];
             const covered = Math.min(to_allocate, -neg.shares);
-            const proceeds_portion = -neg.total_cost * (covered / -neg.shares);
-            const cover_pl = proceeds_portion - covered * price;
+            const cover_ratio = covered / -neg.shares;
+            const proceeds_portion = -neg.total_cost * cover_ratio;
+            const disposal_fees = (neg.disposal_fees ?? 0) * cover_ratio;
+            const cover_cost = covered * price + (fee + tax) * covered / shares;
+            const cover_pl = proceeds_portion - cover_cost;
             const month = fmtYM(row.datetime);
             daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + cover_pl;
             monthly_pl[month] = (monthly_pl[month] ?? 0) + cover_pl;
@@ -221,18 +239,22 @@ export function run_engine(df: Row[]): EngineResult {
             lot_matches.push({
               isin,
               name,
-              sell_id: String(row.transaction_id ?? ""),
+              sell_id: sellIdentity(row),
+              sell_key: sellKey(row),
               sell_datetime: isoFormat(row.datetime),
               lot_datetime: isoFormat(neg.datetime),
-              shares: roundTo(covered, 6),
-              proceeds: roundTo(proceeds_portion, 2),
-              cost_basis: roundTo(covered * price, 2),
-              pl: roundTo(cover_pl, 2),
+              lot_key: neg.buy_key,
+              shares: covered,
+              proceeds: proceeds_portion,
+              cost_basis: cover_cost,
+              pl: cover_pl,
+              disposal_fees,
             });
             neg.shares += covered;
             neg.total_cost += proceeds_portion;
+            neg.disposal_fees = (neg.disposal_fees ?? 0) - disposal_fees;
             to_allocate -= covered;
-            if (-neg.shares < 0.001) {
+            if (negligibleQuantity(neg.shares, neg.total_cost)) {
               monthly_pl[month] = (monthly_pl[month] ?? 0) + -neg.total_cost;
               daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + -neg.total_cost;
               cp.total_realized_pl += -neg.total_cost;
@@ -242,7 +264,7 @@ export function run_engine(df: Row[]): EngineResult {
           if (to_allocate > 0) {
             const ratio = to_allocate / shares;
             const lot_cost = to_allocate * price + (fee + tax) * ratio;
-            open_lots.push({ id: lot_id++, shares: to_allocate, price, total_cost: lot_cost, datetime: row.datetime });
+            open_lots.push({ id: lot_id++, buy_key: sellKey(row), shares: to_allocate, price, total_cost: lot_cost, datetime: row.datetime });
           }
         }
       } else if (row.tx_type === "SELL") {
@@ -252,7 +274,9 @@ export function run_engine(df: Row[]): EngineResult {
         let sell_proceeds = 0;
         let cost_basis_total = 0;
 
-        while (remaining > 0.001 && open_lots.length > 0 && open_lots[0].shares > 0) {
+        while (remaining > 0 && open_lots.length > 0 && open_lots[0].shares > 0 &&
+            !negligibleQuantity(remaining, Math.max(Math.abs(remaining * price),
+              Math.abs(open_lots[0].total_cost * Math.min(remaining, open_lots[0].shares) / open_lots[0].shares)))) {
           const lot = open_lots[0];
           const used = Math.min(remaining, lot.shares);
           const ratio = used / lot.shares;
@@ -262,32 +286,30 @@ export function run_engine(df: Row[]): EngineResult {
           lot_matches.push({
             isin,
             name,
-            sell_id: String(row.transaction_id ?? ""),
+            sell_id: sellIdentity(row),
+            sell_key: sellKey(row),
             sell_datetime: isoFormat(row.datetime),
             lot_datetime: isoFormat(lot.datetime),
-            shares: roundTo(used, 6),
-            proceeds: roundTo(used * price, 2),
-            cost_basis: roundTo(lot_cost_portion, 2),
-            pl: roundTo(used * price - lot_cost_portion, 2),
+            lot_key: lot.buy_key,
+            shares: used,
+            proceeds: used * price,
+            cost_basis: lot_cost_portion,
+            pl: used * price - lot_cost_portion,
           });
           lot.total_cost -= lot_cost_portion;
           lot.shares -= used;
           remaining -= used;
-          if (lot.shares < 0.001) {
+          if (negligibleQuantity(lot.shares, lot.total_cost)) {
             cost_basis_total += lot.total_cost;
             open_lots.shift();
           }
         }
 
-        if (remaining > 0 && remaining <= 0.001) {
-          sell_proceeds += remaining * price;
-          remaining = 0;
-        }
-
-        if (remaining > 0.001) {
+        if (negligibleQuantity(remaining, remaining * price)) remaining = 0;
+        if (remaining > 0) {
           if (price > 0) {
             console.warn(`SELL ${isin} exceeds bought quantity: ${remaining.toFixed(4)} shares tracked as short`);
-            open_lots.push({ id: lot_id++, shares: -remaining, price, total_cost: -(remaining * price), datetime: row.datetime });
+            open_lots.push({ id: lot_id++, buy_key: sellKey(row), shares: -remaining, price, total_cost: -(remaining * price), disposal_fees: (fee + tax) * remaining / shares, datetime: row.datetime });
           } else {
             console.info(`SELL ${isin}: ${remaining.toFixed(4)} unmatched shares at zero price (expiration), ignored`);
           }
@@ -295,43 +317,34 @@ export function run_engine(df: Row[]): EngineResult {
 
         const realized_pl = sell_proceeds - cost_basis_total - fee - tax;
         const month = fmtYM(row.datetime);
-        if (realized_pl !== 0) {
+        if (sell_proceeds !== 0 || cost_basis_total !== 0 || fee !== 0 || tax !== 0) {
           monthly_pl[month] = (monthly_pl[month] ?? 0) + realized_pl;
           daily_pl[fmtYMD(row.datetime)] = (daily_pl[fmtYMD(row.datetime)] ?? 0) + realized_pl;
         }
         const cp = getClosed(isin, name);
         cp.total_realized_pl += realized_pl;
         const matched_shares = shares - remaining;
-        if (matched_shares > 0.001) {
+        if (matched_shares > 0) {
           cp.closed_lots += 1;
           cp.total_shares_sold += matched_shares;
         }
       }
     }
 
-    const dust_cost = open_lots
-      .filter((l) => Math.abs(l.shares) < 0.001)
-      .reduce((acc, l) => acc + l.total_cost, 0);
-    open_lots = open_lots.filter((l) => Math.abs(l.shares) >= 0.001);
-    if (Math.abs(dust_cost) > 0 && last_dt !== null) {
-      const month = fmtYM(last_dt);
-      monthly_pl[month] = (monthly_pl[month] ?? 0) + -dust_cost;
-      daily_pl[fmtYMD(last_dt)] = (daily_pl[fmtYMD(last_dt)] ?? 0) + -dust_cost;
-      const cp = getClosed(isin, name);
-      cp.total_realized_pl += -dust_cost;
-    }
-
+    open_lots = open_lots.filter((lot) => !negligibleQuantity(lot.shares, lot.total_cost));
     if (open_lots.length > 0) {
       const remaining_shares = open_lots.reduce((acc, l) => acc + l.shares, 0);
       const total_cost_basis = open_lots.reduce((acc, l) => acc + l.total_cost, 0);
+      raw_open_cost += total_cost_basis;
       const avg_cost = Math.abs(remaining_shares) > 0 ? total_cost_basis / remaining_shares : 0;
       open_positions.push({
         isin,
         name,
         asset_class,
-        shares: roundTo(remaining_shares, 6),
+        shares: remaining_shares,
         average_cost: roundTo(avg_cost, 4),
         total_cost: roundTo(total_cost_basis, 2),
+        total_cost_raw: total_cost_basis,
       });
     }
 
@@ -368,12 +381,14 @@ export function run_engine(df: Row[]): EngineResult {
       per_product.set(isin, product);
     }
     const gross = isna(row.amount) ? 0 : nz(row.amount);
-    const wht = isna(row.tax) ? 0 : Math.abs(nz(row.tax));
+    const wht = chargeExpense(row, row.tax);
+    product.total_fees += chargeExpense(row, row.fee);
     product.total_dividends += gross;
     product.total_dividend_tax += wht;
-    product.total_dividends_net += gross - wht;
+    product.total_dividends_net += gross - wht - chargeExpense(row, row.fee);
   }
   for (const p of per_product.values()) {
+    p.total_fees = roundTo(p.total_fees, 2);
     p.total_dividends = roundTo(p.total_dividends, 2);
     p.total_dividend_tax = roundTo(p.total_dividend_tax, 2);
     p.total_dividends_net = roundTo(p.total_dividends_net, 2);
@@ -391,21 +406,22 @@ export function run_engine(df: Row[]): EngineResult {
   const summary = computeSummary(df, cash_rows);
   summary.total_realized_pl = roundTo(total_realized_pl, 2);
   summary.total_income = roundTo(
-    total_realized_pl + summary.total_dividends + summary.total_interest + summary.total_saveback,
+    total_realized_pl + summary.total_dividends_net + summary.total_interest_net + summary.total_saveback_net,
     2
   );
 
-  let cash_balance = sumOf(df, "amount") - summary.total_dividend_tax;
-  const trade_rows = df.filter((r) => r.tx_type === "BUY" || r.tx_type === "SELL");
-  const trade_fees = sumAbs(trade_rows, "fee");
-  const trade_taxes = sumAbs(trade_rows, "tax");
+  const cash_balance = df.reduce((acc, row) => {
+    const amount = isna(row.amount) && (row.tx_type === "BUY" || row.tx_type === "SELL")
+      ? (row.tx_type === "BUY" ? -1 : 1) * tradeGross(row) : nz(row.amount);
+    return acc + amount - chargeExpense(row, row.fee) - chargeExpense(row, row.tax);
+  }, 0);
   const fee_rows = cash_rows.filter((r) => r.tx_type === "FEE");
-  const standalone_fee_col = sumAbs(fee_rows, "fee");
-  cash_balance -= trade_fees + trade_taxes + standalone_fee_col;
-  const open_cost = open_positions.reduce((acc, p) => acc + p.total_cost, 0);
-  const standalone_fees = sumAbs(fee_rows, "amount") + standalone_fee_col;
-  const income = summary.total_dividends_net + summary.total_interest + summary.total_saveback;
-  const sources = summary.net_deposits + income + summary.total_realized_pl;
+  const standalone_fee_col = cash_rows.filter((r) => !["DIVIDEND", "INTEREST", "SAVEBACK", "TILG"].includes(r.tx_type))
+    .reduce((a, r) => a + chargeExpense(r, r.fee) + chargeExpense(r, r.tax), 0);
+  const open_cost = raw_open_cost;
+  const standalone_fees = -sumOf(fee_rows, "amount") + standalone_fee_col;
+  const income = summary.total_dividends_net + summary.total_interest_net + summary.total_saveback_net;
+  const sources = summary.net_deposits + income + total_realized_pl;
   const uses = cash_balance + open_cost + summary.total_card_spending + standalone_fees;
   summary.reconciliation = {
     net_deposits: summary.net_deposits,
@@ -425,7 +441,7 @@ export function run_engine(df: Row[]): EngineResult {
       by_class[ac] = { total_invested: 0, total_realized_pl: 0, total_dividends: 0, total_dividend_tax: 0, total_fees: 0, count: 0 };
     }
     by_class[ac].total_invested += p.total_invested;
-    by_class[ac].total_realized_pl += p.total_realized_pl;
+    by_class[ac].total_realized_pl += closed_positions.get(p.isin)?.total_realized_pl ?? 0;
     by_class[ac].total_dividends += p.total_dividends;
     by_class[ac].total_dividend_tax += p.total_dividend_tax;
     by_class[ac].total_fees += p.total_fees;
@@ -457,26 +473,30 @@ export function run_engine(df: Row[]): EngineResult {
     products: [...per_product.values()],
     monthly_pl: Object.entries(monthly_pl)
       .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .map(([month, v]) => ({ month, realized_pl: roundTo(v, 2) })),
+      .map(([month, v]) => ({ month, realized_pl: v })),
     daily_pl: Object.entries(daily_pl)
       .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .map(([date, v]) => ({ date, realized_pl: roundTo(v, 2) })),
+      .map(([date, v]) => ({ date, realized_pl: v })),
     lot_matches,
   };
 }
 
 function computeSummary(df: Row[], cash_rows: Row[]): Record<string, any> {
   const deposits = sumOf(cash_rows.filter((r) => r.tx_type === "DEPOSIT"), "amount");
-  const withdrawals = Math.abs(sumOf(cash_rows.filter((r) => r.tx_type === "WITHDRAWAL"), "amount"));
+  const withdrawals = -sumOf(cash_rows.filter((r) => r.tx_type === "WITHDRAWAL"), "amount");
   const dividends = sumOf(cash_rows.filter((r) => r.tx_type === "DIVIDEND"), "amount");
-  const dividend_tax = Math.abs(sumOf(cash_rows.filter((r) => r.tx_type === "DIVIDEND"), "tax"));
-  const interest = sumOf(cash_rows.filter((r) => r.tx_type === "INTEREST"), "amount");
+  const dividend_tax = cash_rows.filter((r) => r.tx_type === "DIVIDEND").reduce((a, r) => a + chargeExpense(r, r.tax), 0);
+  const dividend_fees = cash_rows.filter((r) => r.tx_type === "DIVIDEND").reduce((a, r) => a + chargeExpense(r, r.fee), 0);
+  const interest_rows = cash_rows.filter((r) => r.tx_type === "INTEREST");
+  const interest = sumOf(interest_rows, "amount");
+  const interest_net = interest_rows.reduce((a, r) => a + nz(r.amount) - chargeExpense(r, r.tax) - chargeExpense(r, r.fee), 0);
   const saveback = sumOf(cash_rows.filter((r) => r.tx_type === "SAVEBACK"), "amount");
-  const fees = Math.abs(sumOf(cash_rows.filter((r) => r.tx_type === "FEE"), "amount")) + Math.abs(sumOf(df, "fee"));
-  const card_spending = Math.abs(sumOf(cash_rows.filter((r) => r.tx_type === "CARD"), "amount"));
+  const saveback_net = cash_rows.filter((r) => r.tx_type === "SAVEBACK").reduce((a, r) => a + nz(r.amount) - chargeExpense(r, r.tax) - chargeExpense(r, r.fee), 0);
+  const fees = -sumOf(cash_rows.filter((r) => r.tx_type === "FEE"), "amount") + df.reduce((a, r) => a + chargeExpense(r, r.fee), 0);
+  const card_spending = -sumOf(cash_rows.filter((r) => r.tx_type === "CARD"), "amount");
 
-  const total_buys = Math.abs(sumOf(df.filter((r) => r.tx_type === "BUY"), "amount"));
-  const total_sells = sumOf(df.filter((r) => r.tx_type === "SELL"), "amount");
+  const total_buys = df.filter((r) => r.tx_type === "BUY").reduce((a, r) => a + tradeGross(r), 0);
+  const total_sells = df.filter((r) => r.tx_type === "SELL").reduce((a, r) => a + tradeGross(r), 0);
   const invested = total_buys - total_sells;
 
   return {
@@ -485,8 +505,10 @@ function computeSummary(df: Row[], cash_rows: Row[]): Record<string, any> {
     net_deposits: roundTo(deposits - withdrawals, 2),
     total_dividends: roundTo(dividends, 2),
     total_dividend_tax: roundTo(dividend_tax, 2),
-    total_dividends_net: roundTo(dividends - dividend_tax, 2),
+    total_dividends_net: roundTo(dividends - dividend_tax - dividend_fees, 2),
     total_interest: roundTo(interest, 2),
+    total_interest_net: roundTo(interest_net, 2),
+    total_saveback_net: roundTo(saveback_net, 2),
     total_saveback: roundTo(saveback, 2),
     total_fees: roundTo(fees, 2),
     total_card_spending: roundTo(card_spending, 2),
@@ -511,7 +533,7 @@ function computeCashFlow(cash_rows: Row[]): Array<Record<string, any>> {
     const entry: Record<string, any> = { month };
     for (const t of flow_types) {
       const val = sumOf(group.filter((r) => r.tx_type === t), "amount");
-      entry[t.toLowerCase()] = roundTo(t === "WITHDRAWAL" ? Math.abs(val) : val, 2);
+      entry[t.toLowerCase()] = roundTo(t === "WITHDRAWAL" ? -val : val, 2);
     }
     result.push(entry);
   }
@@ -528,7 +550,7 @@ function getRecentTransactions(trades: Row[], limit = 50): Array<Record<string, 
       type: row.tx_type,
       name: row.name,
       symbol: row.symbol,
-      shares: isna(row.shares) ? null : roundTo(nz(row.shares), 6),
+      shares: isna(row.shares) ? null : nz(row.shares),
       price: isna(row.price) ? null : roundTo(nz(row.price), 4),
       amount: isna(row.amount) ? null : roundTo(nz(row.amount), 2),
       asset_class: row.asset_class,
@@ -586,22 +608,24 @@ export function compute_income(df: Row[]): { monthly: Array<Record<string, any>>
       monthly.set(month, entry);
     }
     if (row.tx_type === "DIVIDEND") {
-      const wht = isna(row.tax) ? 0 : Math.abs(nz(row.tax));
-      entry.dividends += amount - wht;
-      const currency = (row.original_currency || row.currency || "").trim();
+      const wht = chargeExpense(row, row.tax);
+      const fees = chargeExpense(row, row.fee);
+      entry.dividends += amount - wht - fees;
+      const currency = (row.currency || row.original_currency || "").trim();
       dividends.push({
         date: isoFormat(row.datetime).slice(0, 10),
         name: row.name,
         isin: row.symbol,
         gross: roundTo(amount, 2),
         wht: roundTo(wht, 2),
-        net: roundTo(amount - wht, 2),
+        fees: roundTo(fees, 2),
+        net: roundTo(amount - wht - fees, 2),
         currency,
       });
     } else if (row.tx_type === "INTEREST") {
-      entry.interest += amount;
+      entry.interest += amount - chargeExpense(row, row.tax) - chargeExpense(row, row.fee);
     } else if (row.tx_type === "SAVEBACK") {
-      entry.saveback += amount;
+      entry.saveback += amount - chargeExpense(row, row.tax) - chargeExpense(row, row.fee);
     }
   }
   const monthly_list = [...monthly.entries()]
@@ -621,7 +645,6 @@ export function compute_derivative_executions(df: Row[], knocked_ids: Set<string
   const deriv = df.filter((r) => r.asset_class === "DERIVATIVE");
   if (deriv.length === 0) return [];
 
-  const buys = deriv.filter((r) => r.tx_type === "BUY");
   const warrant_ex = deriv.filter((r) => r.type === "WARRANT_EXERCISE");
   const tilg = deriv.filter((r) => r.tx_type === "TILG");
 
@@ -639,17 +662,22 @@ export function compute_derivative_executions(df: Row[], knocked_ids: Set<string
     return entry;
   };
 
-  for (const row of buys) {
-    if (knocked_ids.has(row.transaction_id ?? "")) {
-      const entry = ensure(row);
-      entry.ko_quantity += nz(row.shares);
-      const price = isna(row.price) ? 0 : Math.abs(nz(row.price));
-      const fee = isna(row.fee) ? 0 : Math.abs(nz(row.fee));
-      entry.ko_loss += -(nz(row.shares) * price);
-      entry.ko_fees += -fee;
-      const tax = isna(row.tax) ? 0 : Math.abs(nz(row.tax));
-      entry.ko_tax += -tax;
-    }
+  const marked = df.map((row, index) => ({ ...row, knocked: row.knocked || knocked_ids.has(operationIdentity(row, index)) }));
+  const engine = run_engine(marked);
+  const expirationKeys = new Set(marked.map((row, index) => row.type === "WARRANT_EXERCISE" ? `@row:${index}` : "").filter(Boolean));
+  for (const match of engine.lot_matches) {
+    if (match.sell_id !== "" && !expirationKeys.has(match.sell_key ?? "")) continue;
+    const buyIndex = Number(match.lot_key?.replace("@row:", ""));
+    const row = marked[buyIndex];
+    if (!row || row.asset_class !== "DERIVATIVE" || row.tx_type !== "BUY") continue;
+    const entry = ensure(row);
+    const ratio = nz(row.shares) > 0 ? match.shares / nz(row.shares) : 0;
+    const fee = chargeExpense(row, row.fee) * ratio;
+    const tax = chargeExpense(row, row.tax) * ratio;
+    entry.ko_quantity += match.shares;
+    entry.ko_loss -= match.cost_basis - fee - tax;
+    entry.ko_fees -= fee;
+    entry.ko_tax -= tax;
   }
 
   for (const row of warrant_ex) {
@@ -658,7 +686,7 @@ export function compute_derivative_executions(df: Row[], knocked_ids: Set<string
 
   for (const row of tilg) {
     const entry = ensure(row);
-    if (!isna(row.amount)) entry.warrant_return += Math.abs(nz(row.amount));
+    if (!isna(row.amount)) entry.warrant_return += nz(row.amount) - chargeExpense(row, row.fee) - chargeExpense(row, row.tax);
   }
 
   const result: Array<Record<string, any>> = [];
@@ -678,47 +706,32 @@ export function compute_derivative_executions(df: Row[], knocked_ids: Set<string
 }
 
 export function auto_detect_knocked(df: Row[]): Set<string> {
-  const deriv = df.filter((r) => r.asset_class === "DERIVATIVE");
-  if (deriv.length === 0) return new Set();
-
-  const buys = deriv.filter((r) => r.tx_type === "BUY");
-  const regular_sells = deriv.filter((r) => r.tx_type === "SELL" && r.type !== "WARRANT_EXERCISE");
-  const warrant_ex = deriv.filter((r) => r.type === "WARRANT_EXERCISE");
-
-  const auto_ids = new Set<string>();
-  const seen = new Set<string>();
-  for (const row of deriv) {
-    if (seen.has(row.symbol)) continue;
-    seen.add(row.symbol);
-    const isin = row.symbol;
-    const isin_we = warrant_ex.filter((r) => r.symbol === isin);
-    if (isin_we.length === 0) continue;
-
-    const total_we = sumOf(isin_we, "shares");
-
-    const lots: Array<[number, string]> = buys
-      .filter((r) => r.symbol === isin)
-      .map((r) => [nz(r.shares), r.transaction_id ?? ""]);
-
-    for (const sell_row of regular_sells.filter((r) => r.symbol === isin)) {
-      let remaining = nz(sell_row.shares);
-      while (remaining > 0.001 && lots.length > 0) {
-        const lot = lots[0];
-        const used = Math.min(remaining, lot[0]);
-        lot[0] -= used;
+  const lots = new Map<string, Array<{ shares: number; id: string }>>();
+  const ids = new Set<string>();
+  const events = df.map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.asset_class === "DERIVATIVE")
+    .sort((a, b) => cmpDatetime(a.row.datetime, b.row.datetime) || a.index - b.index);
+  for (const { row, index } of events) {
+    const queue = lots.get(row.symbol) ?? [];
+    lots.set(row.symbol, queue);
+    if (row.tx_type === "BUY") queue.push({ shares: nz(row.shares), id: operationIdentity(row, index) });
+    else if (row.tx_type === "SELL") {
+      let remaining = nz(row.shares);
+      if (row.type === "WARRANT_EXERCISE") {
+        const available = queue.reduce((a, lot) => a + lot.shares, 0);
+        if (Math.abs(available - remaining) <= 1e-9) {
+          for (const lot of queue) if (lot.shares > 0) ids.add(lot.id);
+        }
+      }
+      while (remaining > 0 && queue.length > 0) {
+        const used = Math.min(remaining, queue[0].shares);
         remaining -= used;
-        if (lot[0] < 0.001) lots.shift();
+        queue[0].shares -= used;
+        if (queue[0].shares === 0) queue.shift();
       }
     }
-
-    const remaining_shares = lots.reduce((acc, lot) => acc + lot[0], 0);
-
-    if (Math.abs(remaining_shares - total_we) < 0.01) {
-      for (const lot of lots) auto_ids.add(lot[1]);
-    }
   }
-
-  return auto_ids;
+  return ids;
 }
 
 export function compute_card_transactions(df: Row[], rules?: CardRule[]): Array<Record<string, any>> {
@@ -733,7 +746,7 @@ export function compute_card_transactions(df: Row[], rules?: CardRule[]): Array<
       id: row.transaction_id ?? "",
       datetime: isoFormat(row.datetime),
       name: row.name,
-      amount: isna(row.amount) ? null : roundTo(Math.abs(nz(row.amount)), 2),
+      amount: isna(row.amount) ? null : roundTo(-nz(row.amount), 2),
       description: row.description ?? "",
       category: category_for_merchant(row.name, mcc, rules),
     });
@@ -765,32 +778,48 @@ export function uncategorized_vendors(df: Row[], rules?: CardRule[]): Array<{ na
 export function apply_prices(
   open_positions: OpenPosition[],
   prices: Record<string, { price: number; source?: string } | number>
-): { positions: OpenPosition[]; totals: { market_value: number; unrealized_pl: number } } {
+): { positions: OpenPosition[]; totals: { market_value: number | null; unrealized_pl: number | null; quoted_market_value: number; quoted_unrealized_pl: number; priced_positions: number; total_positions: number; coverage: number; complete: boolean } } {
   const positions: OpenPosition[] = [];
   let total_value = 0;
   let total_unrealized = 0;
+  let priced_positions = 0;
   for (const p of open_positions) {
     const entry = prices[p.isin];
-    const price = entry !== undefined ? (typeof entry === "object" ? entry.price : entry) : undefined;
+    const price = entry !== undefined && entry !== null ? (typeof entry === "object" ? entry.price : entry) : undefined;
     const row: OpenPosition = { ...p };
-    if (price !== undefined && price !== null) {
+    const market_value = typeof price === "number" ? p.shares * price : NaN;
+    const cost_basis = p.total_cost_raw ?? p.total_cost;
+    const unrealized = market_value - cost_basis;
+    if (typeof price === "number" && Number.isFinite(price) && price >= 0 &&
+        Number.isFinite(market_value) && Number.isFinite(unrealized) &&
+        Number.isFinite(total_value + market_value) && Number.isFinite(total_unrealized + unrealized)) {
+      priced_positions++;
       row.market_price = price;
-      row.market_value = roundTo(p.shares * price, 2);
-      row.unrealized_pl = roundTo(p.shares * price - p.total_cost, 2);
-      total_value += row.market_value;
-      total_unrealized += row.unrealized_pl;
+      row.market_value = roundTo(market_value, 2);
+      row.market_value_raw = market_value;
+      row.unrealized_pl = roundTo(unrealized, 2);
+      total_value += market_value;
+      total_unrealized += unrealized;
     } else {
       row.market_price = null;
       row.market_value = null;
+      row.market_value_raw = null;
       row.unrealized_pl = null;
     }
     positions.push(row);
   }
+  const complete = priced_positions === positions.length;
   return {
     positions,
     totals: {
-      market_value: roundTo(total_value, 2),
-      unrealized_pl: roundTo(total_unrealized, 2),
+      market_value: complete ? roundTo(total_value, 2) : null,
+      unrealized_pl: complete ? roundTo(total_unrealized, 2) : null,
+      quoted_market_value: roundTo(total_value, 2),
+      quoted_unrealized_pl: roundTo(total_unrealized, 2),
+      priced_positions,
+      total_positions: positions.length,
+      coverage: positions.length ? priced_positions / positions.length : 1,
+      complete,
     },
   };
 }
