@@ -52,6 +52,37 @@ test("anonymous occurrences survive, exact repeats deduplicate, overlap blocks; 
   assert.equal(replaced.ledger.revision, "2"); assert.deepEqual(validateLedger(replaced.ledger), replaced.ledger);
   assert.throws(() => prepareImport(a, "invalid", { mode: "replace" })); assert.equal(a.movements.length, 2);
 });
+
+test("derivative display name changes deduplicate while financial conflicts remain atomic", () => {
+  const h = "datetime,date,category,type,asset_class,name,symbol,shares,price,amount,fee,currency,transaction_id,unknown";
+  const trade = (name: string, amount = "-52.69", asset = "DERIVATIVE", fee = "-1.00", symbol = "DE000VK2KEU5", shares = "11", unknown = "original") =>
+    `2026-02-04T15:05:06.232Z,2026-02-04,TRADING,BUY,${asset},"${name}",${symbol},${shares},4.79,${amount},${fee},EUR,a,${unknown}`;
+  const statement = (...rows: string[]) => [h, ...rows].join("\n");
+  const original = statement(trade("Long 198,29 €"));
+  const updated = statement(trade("Long 200,13 €"));
+  const current = prepareImport(emptyLedger(), original).ledger;
+  const before = JSON.stringify(current);
+  assert.equal(prepareImport(current, updated).summary.duplicates, 1);
+  for (const type of ["SELL", "MIGRATION", "WARRANT_EXERCISE", "TILG"]) {
+    const convert = (text: string) => text.replace(",BUY,", `,${type},`).replace(",-52.69,", ",52.69,");
+    const previous = prepareImport(emptyLedger(), convert(original)).ledger;
+    assert.equal(prepareImport(previous, convert(updated)).summary.duplicates, 1);
+  }
+  assert.equal(parseCSVDetailed(statement(trade("Long 198,29 €"), trade("Long 200,13 €"))).rows.length, 1);
+  const merged = prepareImport(current, statement(trade("Long 200,13 €"), trade("Long 200,13 €").replace(",a,original", ",b,original")));
+  assert.equal(merged.summary.added, 1);
+  assert.equal(ledgerRows(merged.ledger)[0].name, "Long 198,29 €");
+  assert.deepEqual(validateLedger(merged.ledger), merged.ledger);
+  assert.deepEqual(parseBackup(exportBackup({ ...portfolio(), ledger: merged.ledger })).ledger, merged.ledger);
+  for (const changed of [trade("Long 200,13 €", "-53.69"), trade("Long 200,13 €", "-52.69", "DERIVATIVE", "-2"), trade("Long 200,13 €", "-52.69", "DERIVATIVE", "-1.00", "OTHER"), trade("Long 200,13 €", "-52.69", "DERIVATIVE", "-1.00", "DE000VK2KEU5", "12"), trade("Long 200,13 €", "-52.69", "DERIVATIVE", "-1.00", "DE000VK2KEU5", "11", "changed")]) {
+    assert.throws(() => prepareImport(current, statement(changed)), /Conflicting/);
+  }
+  const fund = prepareImport(emptyLedger(), statement(trade("Old fund", "-52.69", "FUND"))).ledger;
+  assert.throws(() => prepareImport(fund, statement(trade("New fund", "-52.69", "FUND"))), /Conflicting/);
+  const stock = prepareImport(emptyLedger(), statement(trade("Old stock", "-52.69", "STOCK"))).ledger;
+  assert.throws(() => prepareImport(stock, statement(trade("New stock", "-52.69", "STOCK"))), /Conflicting/);
+  assert.equal(JSON.stringify(current), before);
+});
 test("missing partial rows never delete prior movements and disjoint anonymous statements append", () => {
   const a = prepareImport(emptyLedger(), csv(row("a"), row("b"))).ledger;
   assert.equal(prepareImport(a, csv(row("b"))).ledger.movements.length, 2);

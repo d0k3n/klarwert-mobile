@@ -6,6 +6,7 @@ import { Browser } from "@capacitor/browser";
 import { FilePicker } from "@capawesome/capacitor-file-picker";
 
 import { parseCSV } from "./csv.ts";
+import { productsWithUnderlyings } from "./derivative_underlyings.ts";
 import {
   run_engine,
   compute_derivative_executions,
@@ -451,7 +452,7 @@ async function handleApi(url: string, init?: RequestInit): Promise<Response> {
         return jsonResponse(computeData().transactions);
 
       case "GET products":
-        return jsonResponse(computeData().products);
+        return jsonResponse(productsWithUnderlyings(computeData().products, df ?? []));
 
       case "GET monthly_pl":
         return jsonResponse(computeData().monthly_pl);

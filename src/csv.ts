@@ -146,11 +146,18 @@ export function parseCSVDetailed(text: string): DetailedCSV {
     if (type !== "MIGRATION" && row.shares !== null) row.shares = Math.abs(row.shares);
     const fields: Record<string, string> = Object.create(null);
     header.forEach((h, i) => { fields[h.trim()] = h.trim() === "transaction_id" ? cells[i].trim() : cells[i]; });
-    const content = JSON.stringify(Object.keys(fields).sort().map(k => [k, fields[k]]));
+    // The broker rewrites the display name of every derivative row of a product when
+    // its knock-out barrier is recalculated ("Long 198,29 €" -> "Long 200,13 €"), so the
+    // name describes the product, not the individual movement. Keep it in the stored
+    // fields for provenance, but identify movements by the columns stable across exports.
+    const volatileDerivativeName = String(row.asset_class).trim() === "DERIVATIVE";
+    const content = JSON.stringify(Object.keys(fields).sort()
+      .filter(k => !(volatileDerivativeName && k === "name"))
+      .map(k => [k, fields[k]]));
     const detail: DetailedCSVRecord = { row, fields, cells: [...cells], line, duplicate: false, canonical: content };
     detailed.push(detail);
     if (row.transaction_id) {
-      // Compare every exported column, including ones not consumed by the engine, to prevent silent conflicts.
+      // Compare stable exported columns, including ones not consumed by the engine.
       const previous = seen.get(row.transaction_id);
       if (previous) {
         if (previous.content !== content) invalid(line, "transaction_id", `conflicting ID ${row.transaction_id}, first seen on line ${previous.line}`);

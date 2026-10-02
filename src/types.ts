@@ -72,6 +72,7 @@ export interface ClosedPosition {
 export interface Product {
   isin: string;
   name: string;
+  underlying?: string;
   asset_class: string;
   status: string;
   total_invested: number;

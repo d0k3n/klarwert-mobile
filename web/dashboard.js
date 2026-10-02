@@ -2027,7 +2027,7 @@ function renderDerivativeUnderlyings(products, settings) {
   const associations = settings.derivative_underlyings || {};
   const groups = new Map();
   for (const p of derivatives) {
-    const asset = associations[p.isin] || 'Unassigned';
+    const asset = associations[p.isin] || p.underlying || p.name || 'Unassigned';
     const key = asset.toLocaleLowerCase();
     const g = groups.get(key) || { underlying: asset, products: 0, total_invested: 0, total_realized_pl: 0 };
     g.products++; g.total_invested += p.total_invested; g.total_realized_pl += p.total_realized_pl;
@@ -2041,7 +2041,7 @@ function renderDerivativeUnderlyings(products, settings) {
     label.style.display = 'block';
     label.textContent = `${p.name} (${p.isin}) `;
     const input = document.createElement('input'); input.type = 'text'; input.maxLength = 100;
-    input.value = associations[p.isin] || ''; input.placeholder = 'Underlying asset, e.g. NVIDIA';
+    input.value = associations[p.isin] || ''; input.placeholder = p.underlying || p.name || 'Underlying asset, e.g. NVIDIA';
     input.dataset.isin = p.isin; label.append(input); container.append(label);
   }
 }
