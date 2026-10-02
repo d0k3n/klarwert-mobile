@@ -259,6 +259,18 @@
 </section>
 
 <section>
+  <h2>Derivatives by Underlying Asset · full history</h2>
+  <p>Ranked by realized P&amp;L in EUR, including sales, redemptions and knock-outs, after fees and taxes. Open-position gains are excluded. Assign the same asset name to its different ISINs below; unidentified products remain Unassigned.</p>
+  <div class="table-wrapper"><table id="derivative-underlyings-table">
+    <thead><tr><th data-sort="underlying">Underlying asset</th><th data-sort="products" class="num">Products</th><th data-sort="total_invested" class="num">Invested</th><th data-sort="total_realized_pl" class="num">Realized P&amp;L</th></tr></thead><tbody></tbody>
+  </table></div>
+  <details><summary>Assign underlying assets</summary>
+    <div id="derivative-underlying-mapping"></div>
+    <button id="save-derivative-underlyings" onclick="saveDerivativeUnderlyings()">Save associations</button>
+    <span id="derivative-underlying-status" role="status"></span>
+  </details>
+</section>
+<section>
   <h2>Derivative Executions</h2>
   <div class="table-wrapper">
   <table id="derivative-executions-table">

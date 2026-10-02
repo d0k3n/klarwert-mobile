@@ -43,3 +43,12 @@ test("duplicate imported card patterns use the last category", () => {
   });
   assert.deepEqual(config.card_rules, [{ pattern: "my-cafe", category: "Eating Out" }]);
 });
+
+
+test("derivative underlying associations survive configuration exports and validate input", () => {
+  const config = makeUserConfig({ projection_active_days_per_week: 3, derivative_underlyings: { DE000FA6ZNB7: " NVIDIA " } }, []);
+  assert.deepEqual(parseUserConfig(JSON.parse(JSON.stringify(config))).settings.derivative_underlyings, { DE000FA6ZNB7: "NVIDIA" });
+  for (const mapping of [[], { invalid: "NVIDIA" }, { DE000FA6ZNB7: " " }, { DE000FA6ZNB7: 12 }]) {
+    assert.throws(() => validateUserSettings({ projection_active_days_per_week: 3, derivative_underlyings: mapping }));
+  }
+});

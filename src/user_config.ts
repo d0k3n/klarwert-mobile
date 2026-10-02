@@ -6,6 +6,7 @@ export const USER_CONFIG_VERSION = 1;
 
 export interface UserSettings {
   projection_active_days_per_week: number;
+  derivative_underlyings?: Record<string, string>;
 }
 
 export interface UserConfig {
@@ -25,7 +26,18 @@ export function validateUserSettings(value: unknown): UserSettings {
   if (!Number.isInteger(days) || days < 1 || days > 7) {
     throw new Error("Active days per week must be an integer from 1 to 7");
   }
-  return { projection_active_days_per_week: days };
+  const raw = (value as Record<string, unknown>).derivative_underlyings;
+  const settings: UserSettings = { projection_active_days_per_week: days };
+  if (raw !== undefined) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid derivative underlyings");
+    const entries = Object.entries(raw);
+    if (entries.length > 10000) throw new Error("Too many derivative underlyings");
+    settings.derivative_underlyings = Object.fromEntries(entries.map(([isin, asset]) => {
+      if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin) || typeof asset !== "string" || !asset.trim() || asset.length > 100) throw new Error("Invalid derivative underlying association");
+      return [isin, asset.trim()];
+    }));
+  }
+  return settings;
 }
 
 export function validateCardRules(value: unknown): CardRule[] {

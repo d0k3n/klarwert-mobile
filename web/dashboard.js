@@ -166,6 +166,7 @@ renderMonthlyPLChart(dailyPl);
 renderWeeklyPLChart(dailyPl);
 renderAnnualPLProjection(annualProjection);
 renderPLEvolutionChart(monthlyPl);
+renderDerivativeUnderlyings(products, settings);
 renderTable("product-results-table", products, TABLE_CONFIGS['product-results-table']);
 renderAllocationChart(openPositions);
 renderDividendChart(products);
@@ -1105,7 +1106,7 @@ window.saveConfigSettings = async function () {
     const response = await fetch(`${BASE}/api/settings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projection_active_days_per_week: days }),
+      body: JSON.stringify({ ...currentUserSettings, projection_active_days_per_week: days }),
     });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Could not save settings");
@@ -2020,3 +2021,42 @@ if(resultsEl('period')) {
   resultsEl('recover').addEventListener('click',async()=>{if(!confirm('Recover the previous complete portfolio revision?'))return;try{const response=await fetch(`${BASE}/api/recover_previous`,{method:'POST'});const data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||'Recovery failed');await loadResults();await loadAllData();}catch(e){resultsEl('status').textContent=e.message;}});
   loadResults();
 }
+
+function renderDerivativeUnderlyings(products, settings) {
+  const derivatives = products.filter(p => p.asset_class === 'DERIVATIVE');
+  const associations = settings.derivative_underlyings || {};
+  const groups = new Map();
+  for (const p of derivatives) {
+    const asset = associations[p.isin] || 'Unassigned';
+    const key = asset.toLocaleLowerCase();
+    const g = groups.get(key) || { underlying: asset, products: 0, total_invested: 0, total_realized_pl: 0 };
+    g.products++; g.total_invested += p.total_invested; g.total_realized_pl += p.total_realized_pl;
+    groups.set(key, g);
+  }
+  renderTable('derivative-underlyings-table', [...groups.values()].sort((a,b) => b.total_realized_pl-a.total_realized_pl), null);
+  const container = document.getElementById('derivative-underlying-mapping');
+  container.replaceChildren();
+  for (const p of derivatives) {
+    const label = document.createElement('label');
+    label.style.display = 'block';
+    label.textContent = `${p.name} (${p.isin}) `;
+    const input = document.createElement('input'); input.type = 'text'; input.maxLength = 100;
+    input.value = associations[p.isin] || ''; input.placeholder = 'Underlying asset, e.g. NVIDIA';
+    input.dataset.isin = p.isin; label.append(input); container.append(label);
+  }
+}
+window.saveDerivativeUnderlyings = async function () {
+  const status = document.getElementById('derivative-underlying-status');
+  const button = document.getElementById('save-derivative-underlyings'); button.disabled = true;
+  try {
+    const mapping = { ...(currentUserSettings.derivative_underlyings || {}) };
+    for (const input of document.querySelectorAll('#derivative-underlying-mapping input')) {
+      const asset = input.value.trim();
+      if (asset) mapping[input.dataset.isin] = asset; else delete mapping[input.dataset.isin];
+    }
+    const response = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({...currentUserSettings, derivative_underlyings: mapping}) });
+    if (!response.ok) throw new Error('Could not save associations');
+    await loadAllData(); status.textContent = 'Associations saved.';
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
+};
