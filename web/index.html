@@ -50,19 +50,19 @@
   <label>Period <select id="results-period"><option value="all">All imported history</option><option value="today">Today</option><option value="week">This week</option><option value="month">This month</option><option value="year">This year</option><option value="custom">Date range</option></select></label>
   <label>From <input id="results-start" type="date"></label><label>To <input id="results-end" type="date"></label><button id="results-apply">Apply period</button>
  </div>
- <p id="results-status" role="status" aria-live="polite"></p><p id="results-coverage"></p>
+ <p id="results-status" role="status" aria-live="polite"></p><details class="results-quality"><summary>Data quality &amp; imported coverage</summary><p id="results-coverage"></p></details>
  <div id="results-cards" class="cards"></div><p id="results-comparison"></p>
  <label>Bars <select id="results-aggregation"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label>
  <div class="results-chart"><canvas id="results-curve" aria-label="Daily cumulative realized result" role="img"></canvas></div><div class="results-chart"><canvas id="results-bars" aria-label="Realized results by date" role="img"></canvas></div>
- <div class="results-controls"><button id="results-month-prev" aria-label="Previous calendar month">Previous</button><strong id="results-month"></strong><button id="results-month-next" aria-label="Next calendar month">Next</button></div>
+ <h3 class="results-section-title">Daily realized results</h3><div class="results-controls results-month-nav"><button id="results-month-prev" aria-label="Previous calendar month">Previous</button><strong id="results-month"></strong><button id="results-month-next" aria-label="Next calendar month">Next</button></div>
  <div class="results-calendar-head" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div id="results-calendar" class="results-calendar" aria-label="Realized results calendar"></div>
- <p>— No realizations · 0.00 Realized zero · ? Incomplete acquisition cost</p>
- <div class="results-controls"><label>History <select id="results-history-kind"><option value="realizations">Realizations</option><option value="movements">Statement movements</option></select></label><label>Product / ISIN <input id="results-search" type="search"></label><button id="results-search-apply">Search</button><button id="results-clear-day">All days in period</button></div>
+ <p class="results-legend"><span class="result-positive">+ Profit</span><span class="result-negative">− Loss</span><span>— No realizations</span><span>0.00 Realized zero</span><span class="result-warning">? Incomplete cost</span><span>Intensity = absolute known result · EUR</span></p>
+ <h3 class="results-section-title">Operation history</h3><div class="results-controls"><label>History <select id="results-history-kind"><option value="realizations">Realizations</option><option value="movements">Statement movements</option></select></label><label>Product / ISIN <input id="results-search" type="search"></label><button id="results-search-apply">Search</button><button id="results-clear-day">All days in period</button></div>
  <p id="results-history-count" role="status"></p><div id="results-history"></div><div class="results-controls"><button id="results-page-prev">Previous page</button><span id="results-page"></span><button id="results-page-next">Next page</button></div>
- <h3>Automatic annual extrapolation</h3><div id="results-projection"></div>
+ <h3 class="results-section-title">Automatic annual extrapolation</h3><div id="results-projection"></div>
  <div class="results-controls"><button id="results-csv" disabled>Analytical CSV</button><button id="results-backup">Full restorable backup</button><label class="results-file">Restore backup <input id="results-restore" type="file" accept=".json,application/json"></label><button id="results-recover">Recover previous revision</button><label><input type="checkbox" id="results-replace"> Replace all history on next CSV import</label></div>
  <p>PDF summarizes the selected period. Analytical CSV contains operation costs. Backup includes all history and legacy settings. Replacing or restoring publishes a complete revision; the previous revision can be recovered.</p>
- <dialog id="results-detail"><button id="results-detail-close">Back to history</button><h3>Realization detail</h3><div id="results-detail-body"></div></dialog>
+ <dialog id="results-detail" aria-labelledby="results-detail-title"><button id="results-detail-close">Back to history</button><h3 id="results-detail-title">Realization detail</h3><div id="results-detail-body"></div></dialog>
 </section>
 <div class="dash-controls">
   <button id="expand-all-btn">Expand all</button>

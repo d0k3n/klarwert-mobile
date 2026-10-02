@@ -1847,6 +1847,7 @@ function initDashGroups() {
 const resultsState = { analysis: null, generation: 0, historyGeneration: 0, page: 1, day: null, month: null, curve: null, bars: null };
 const resultsEl = id => document.getElementById(`results-${id}`);
 const resultsMoney = value => value == null ? 'Unavailable' : new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(value);
+const resultsTone = value => value == null ? 'result-unavailable' : value > 0 ? 'result-positive' : value < 0 ? 'result-negative' : 'result-zero';
 const resultsDate = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
 function resultsPeriodQuery() {
   const choice = resultsEl('period').value;
@@ -1889,9 +1890,9 @@ async function loadResults() {
     const m = analysis.metrics;
     resultsEl('cards').replaceChildren();
     for (const [label,value] of [['Known net realized P&L',resultsMoney(m.net_result)],['Operations with result',`${m.operations} (${m.valid_operations} valid)`],['Win rate',m.win_rate == null ? 'Unavailable' : `${(m.win_rate*100).toFixed(1)}%`],['Average net result',resultsMoney(m.average_result)],['Cost quality',`${m.incomplete_operations} incomplete`],['Dividends',resultsMoney(analysis.income.dividends)],['Interest',resultsMoney(analysis.income.interest)]]) {
-      const card = document.createElement('div'); card.className = 'card';
+      const card = document.createElement('div'); card.className = 'card' + (label === 'Known net realized P&L' ? ' results-net' : '');
       const title = document.createElement('div'); title.className = 'label'; title.textContent = label;
-      const val = document.createElement('div'); val.className = 'value'; val.textContent = value; card.append(title,val); resultsEl('cards').append(card);
+      const val = document.createElement('div'); val.className = 'value ' + (label === 'Known net realized P&L' ? resultsTone(m.net_result) : label === 'Average net result' ? resultsTone(m.average_result) : label === 'Cost quality' && m.incomplete_operations ? 'result-warning' : ''); val.textContent = value; card.append(title,val); resultsEl('cards').append(card);
     }
     const prev = analysis.previous;
     resultsEl('comparison').textContent = prev ? `Previous period ${prev.period.start} – ${prev.period.end}: ${resultsMoney(prev.net_result)}. ${prev.comparable ? `Change ${resultsMoney(m.net_result-prev.net_result)}.` : 'Coverage does not support a complete comparison.'}` : 'No comparable previous period.';
@@ -1922,12 +1923,21 @@ function renderResultsCalendar() {
   const offset=(new Date(year,month-1,1).getDay()+6)%7;
   for(let i=0;i<offset;i++)grid.append(document.createElement('span'));
   const daily=new Map(a.daily.map(d=>[d.date,d]));
+  const peak=Math.max(0,...a.daily.filter(d=>d.date.startsWith(resultsState.month)).map(d=>Math.abs(d.net_result || 0))) || 1;
   for(let i=1;i<=days;i++) {
     const date=`${resultsState.month}-${String(i).padStart(2,'0')}`, day=daily.get(date), button=document.createElement('button');
     button.type='button'; button.disabled=date<a.period.start||date>a.period.end;
-    button.textContent=`${i}\n${day?.operations ? resultsMoney(day.net_result) : '—'}\n${day?.operations||0} ops${day?.incomplete?' ?':''}`;
+    const value=day?.net_result || 0;
+    button.className='results-day ' + (!day?.operations ? 'no-data' : value === 0 ? 'realized-zero' : value > 0 ? 'heat-positive' : 'heat-negative') + (day?.incomplete ? ' cost-incomplete' : '') + (resultsState.day === date ? ' is-selected' : '');
+    button.style.setProperty('--heat', String(12 + 65 * Math.abs(value) / peak));
+    button.setAttribute('aria-pressed',String(resultsState.day === date));
+    const number=document.createElement('span');number.className='results-day-number';number.textContent=String(i);
+    const amount=document.createElement('span');amount.className='results-day-value';amount.textContent=day?.operations ? resultsMoney(day.net_result).replace('€','') : '—';
+    amount.style.setProperty('--digits',String(amount.textContent.length));
+    const count=document.createElement('span');count.className='results-day-count';count.textContent=`${day?.operations||0} ops${day?.incomplete?' ?':''}`;
+    button.append(number,amount,count);
     button.setAttribute('aria-label',`${date}, ${day?.operations||0} realizations, ${day?.operations?resultsMoney(day.net_result):'no realizations'}, ${day?.incomplete||0} incomplete`);
-    button.addEventListener('click',()=>{resultsState.day=date;resultsState.page=1;resultsEl('history-kind').value='realizations';loadResultsHistory();resultsEl('history').tabIndex=-1;resultsEl('history').focus();}); grid.append(button);
+    button.addEventListener('click',()=>{resultsState.day=date;resultsState.page=1;resultsEl('history-kind').value='realizations';renderResultsCalendar();loadResultsHistory();resultsEl('history').tabIndex=-1;resultsEl('history').focus();}); grid.append(button);
   }
 }
 async function loadResultsHistory() {
@@ -1948,29 +1958,44 @@ async function loadResultsHistory() {
       const entry=document.createElement('div');entry.className='results-entry';
       const title=document.createElement(kind==='realizations'?'button':'span');title.textContent=`${item.date} · ${item.name||item.description||item.type} · ${item.isin||item.symbol||''}`;
       if(kind==='realizations')title.addEventListener('click',()=>openResultsDetail(item,title));
-      const value=document.createElement('span');value.textContent=kind==='realizations'?`${resultsMoney(item.net_result)}${item.cost_quality==='unknown'?' · incomplete':''}`:resultsMoney(item.amount);
+      const value=document.createElement('span');value.className='results-entry-value ' + resultsTone(kind==='realizations'?item.net_result:item.amount);value.textContent=kind==='realizations'?`${resultsMoney(item.net_result)}${item.cost_quality==='unknown'?' · incomplete':''}`:resultsMoney(item.amount);
       entry.append(title,value);list.append(entry);
     }
   }catch(e){if(generation===resultsState.historyGeneration)resultsEl('history-count').textContent=`History unavailable: ${e.message}`;}
 }
 function openResultsDetail(item, trigger) {
   const body=resultsEl('detail-body');body.replaceChildren();const dl=document.createElement('dl');
-  for(const [label,value] of [['Product',item.name],['ISIN',item.isin],['Statement date',item.date],['Timestamp',item.datetime],['Movement identity',item.movement_id],['Broker transaction',item.transaction_id],['Event',item.kind],['Shares',item.shares],['Gross proceeds',resultsMoney(item.gross_proceeds)],['Gross acquisition cost',resultsMoney(item.gross_cost)],['Acquisition charges',resultsMoney(item.acquisition_charges)],['Exit charges',resultsMoney(item.exit_charges)],['Gross result',resultsMoney(item.gross_result)],['Net result',resultsMoney(item.net_result)],['Known matched subtotal',resultsMoney(item.known_net_result)],['Cost quality',item.cost_quality],['Unmatched shares',item.unmatched_shares]]) {const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=String(value??'—');dl.append(dt,dd);}body.append(dl);
+  for(const [label,value] of [['Product',item.name],['ISIN',item.isin],['Net result',resultsMoney(item.net_result)],['Known matched subtotal',resultsMoney(item.known_net_result)],['Cost quality',item.cost_quality],['Unmatched shares',item.unmatched_shares],['Shares',item.shares],['Gross proceeds',resultsMoney(item.gross_proceeds)],['Gross acquisition cost',resultsMoney(item.gross_cost)],['Acquisition charges',resultsMoney(item.acquisition_charges)],['Exit charges',resultsMoney(item.exit_charges)],['Gross result',resultsMoney(item.gross_result)],['Statement date',item.date]]) {
+    const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=String(value??'—');
+    if(['Gross result','Net result','Known matched subtotal'].includes(label))dd.className=resultsTone(label==='Net result'?item.net_result:label==='Gross result'?item.gross_result:item.known_net_result);
+    if(label==='Net result'){dt.className='results-detail-net';dd.className+=' results-detail-net';}
+    if(label==='Cost quality' && item.cost_quality==='unknown')dd.className='result-warning';dl.append(dt,dd);
+  }body.append(dl);
   const heading=document.createElement('h4');heading.textContent='FIFO acquisition lots';body.append(heading);
-  for(const lot of item.lots){const p=document.createElement('p');p.textContent=`${lot.lot_datetime} · ${lot.shares} shares · cost ${resultsMoney(lot.cost_basis)} · proceeds ${resultsMoney(lot.proceeds)}`;body.append(p);}
+  for(const lot of item.lots){const p=document.createElement('p');p.className='results-lot';p.textContent=`${lot.lot_datetime} · ${lot.shares} shares · cost ${resultsMoney(lot.cost_basis)} · proceeds ${resultsMoney(lot.proceeds)}`;body.append(p);}
+  const audit=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Statement identities & timestamp';audit.append(summary);
+  for(const [label,value] of [['Timestamp',item.datetime],['Movement identity',item.movement_id],['Broker transaction',item.transaction_id],['Event',item.kind]]){const p=document.createElement('p');p.textContent=`${label}: ${value??'—'}`;audit.append(p);}body.append(audit);
   resultsEl('detail').showModal();resultsEl('detail').addEventListener('close',()=>trigger.focus(),{once:true});
 }
 function renderResultsProjection(data) {
   const root=resultsEl('projection');root.replaceChildren();
-  const paragraph = text => { const p=document.createElement('p');p.textContent=text;root.append(p); };
+  let target=root;
+  const paragraph = text => { const p=document.createElement('p');p.textContent=text;target.append(p); };
   if (!data?.historical) { paragraph('No imported observation window is available.');return; }
   paragraph(`Reference: last imported movement ${data.as_of}. ${data.coverage_assumption}`);
   for (const [label,scenario] of [['Available year history',data.historical],['Recent window (up to 60 days)',data.recent]]) {
-    const heading=document.createElement('h4');heading.textContent=label;root.append(heading);
+    const card=document.createElement('article');card.className='results-projection-card';root.append(card);target=card;
+    const heading=document.createElement('h4');heading.textContent=label;card.append(heading);
+    const labelEl=document.createElement('div');labelEl.className='label';labelEl.textContent=scenario.status==='closed_year'?'Annual observed result':'Annual observed + extrapolated';card.append(labelEl);
+    const value=document.createElement('div');value.className='value '+resultsTone(scenario.projected_pl);value.textContent=scenario.status==='available'?resultsMoney(scenario.projected_pl):scenario.status==='closed_year'?resultsMoney(scenario.ytd_pl):'Unavailable';card.append(value);
+    const assumptions=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Observation & assumptions';assumptions.append(summary);card.append(assumptions);target=assumptions;
     paragraph(`${scenario.observed_start} – ${scenario.observed_end}: ${scenario.observation_days} observed calendar days, ${scenario.active_days} days with realizations. Observed window result ${resultsMoney(scenario.observed_pl)}; annual observed result ${resultsMoney(scenario.ytd_pl)}.`);
     const reason={insufficient_sample:'Insufficient sample: at least 30 observed days and 10 days with realizations are required.',unknown_cost:'Unavailable: the observed year contains unknown acquisition costs.',closed_year:'Year closed: observed results only; no future extrapolation.'}[scenario.status];
+    target=card;
     if(reason)paragraph(reason);
-    else paragraph(`Extrapolated remaining result ${resultsMoney(scenario.projected_remaining_pl)}; annual observed plus extrapolated result ${resultsMoney(scenario.projected_pl)}. Assumes the observed cadence and average result continue for ${scenario.remaining_days} calendar days.`);
+    else paragraph(`Observed ${resultsMoney(scenario.ytd_pl)} · Remaining ${resultsMoney(scenario.projected_remaining_pl)}`);
+    target=assumptions;
+    paragraph(`Assumes the observed cadence and average result continue for ${scenario.remaining_days} calendar days.`);
     paragraph(`Formula: ${scenario.formula}. Average per realization day ${resultsMoney(scenario.average_active_day)}; observed cadence ${(scenario.cadence*100).toFixed(1)}% of calendar days.`);
   }
 }
@@ -1983,7 +2008,7 @@ if(resultsEl('period')) {
   resultsEl('apply').addEventListener('click',loadResults);
   resultsEl('aggregation').addEventListener('change',renderResultsCharts);
   for(const [id,step] of [['month-prev',-1],['month-next',1]])resultsEl(id).addEventListener('click',()=>{const date=new Date(`${resultsState.month}-01T12:00:00`);date.setMonth(date.getMonth()+step);resultsState.month=resultsDate(date).slice(0,7);renderResultsCalendar();});
-  for(const id of ['search-apply','history-kind','clear-day'])resultsEl(id).addEventListener(id==='history-kind'?'change':'click',()=>{resultsState.page=1;if(id==='clear-day')resultsState.day=null;loadResultsHistory();});
+  for(const id of ['search-apply','history-kind','clear-day'])resultsEl(id).addEventListener(id==='history-kind'?'change':'click',()=>{resultsState.page=1;if(id==='clear-day'){resultsState.day=null;renderResultsCalendar();}loadResultsHistory();});
   resultsEl('search').addEventListener('keydown',e=>{if(e.key==='Enter'){resultsState.page=1;loadResultsHistory();}});
   for(const [id,step]of [['page-prev',-1],['page-next',1]])resultsEl(id).addEventListener('click',()=>{resultsState.page+=step;loadResultsHistory();});
   resultsEl('detail-close').addEventListener('click',()=>resultsEl('detail').close());
