@@ -52,10 +52,18 @@
  </div>
  <p id="results-status" role="status" aria-live="polite"></p><details class="results-quality"><summary>Data quality &amp; imported coverage</summary><p id="results-coverage"></p></details>
  <div id="results-cards" class="cards"></div><p id="results-comparison"></p>
+ <details id="results-evolution"><summary>Result evolution charts</summary>
  <label>Bars <select id="results-aggregation"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label>
  <div class="results-chart"><canvas id="results-curve" aria-label="Daily cumulative realized result" role="img"></canvas></div><div class="results-chart"><canvas id="results-bars" aria-label="Realized results by date" role="img"></canvas></div>
- <h3 class="results-section-title">Daily realized results</h3><div class="results-controls results-month-nav"><button id="results-month-prev" aria-label="Previous calendar month">Previous</button><strong id="results-month"></strong><button id="results-month-next" aria-label="Next calendar month">Next</button></div>
+ </details>
+ <h3 class="results-section-title">Realized P&amp;L · EUR</h3>
+ <div class="results-controls"><label>View <select id="results-view"><option value="day">Days</option><option value="week">Weeks</option><option value="month">Months</option></select></label><label>Year <select id="results-year"></select></label><button id="results-back-periods" hidden>Back to weeks</button></div>
+ <p id="results-period-total" aria-live="polite"></p><p id="results-period-coverage" class="metric-note"></p>
+ <div id="results-periods" class="results-periods" aria-label="Period totals"></div>
+ <div id="results-day-view">
+ <div class="results-controls results-month-nav"><button id="results-month-prev" aria-label="Previous calendar month">Previous</button><strong id="results-month"></strong><button id="results-month-next" aria-label="Next calendar month">Next</button></div>
  <div class="results-calendar-head" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div id="results-calendar" class="results-calendar" aria-label="Realized results calendar"></div>
+ </div>
  <p class="results-legend"><span class="result-positive">+ Profit</span><span class="result-negative">− Loss</span><span>— No realizations</span><span>0.00 Realized zero</span><span class="result-warning">? Incomplete cost</span><span>Intensity = absolute known result · EUR</span></p>
  <h3 class="results-section-title">Operation history</h3><div class="results-controls"><label>History <select id="results-history-kind"><option value="realizations">Realizations</option><option value="movements">Statement movements</option></select></label><label>Product / ISIN <input id="results-search" type="search"></label><button id="results-search-apply">Search</button><button id="results-clear-day">All days in period</button></div>
  <p id="results-history-count" role="status"></p><div id="results-history"></div><div class="results-controls"><button id="results-page-prev">Previous page</button><span id="results-page"></span><button id="results-page-next">Next page</button></div>

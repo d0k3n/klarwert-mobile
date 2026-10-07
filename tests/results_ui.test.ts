@@ -47,3 +47,29 @@ test('heatmap preserves signs, proportional intensity, full amounts and accessib
  const low=Number(buttons[1].style.values['--heat']),high=Number(buttons[2].style.values['--heat']);
  assert.ok(high>low);assert.equal(high,Number(buttons[3].style.values['--heat']));
 });
+
+test('monthly and weekly totals partition a year without double counting boundary days',()=>{
+ const h=harness();h.run("resultsState.analysis={period:{start:'2025-12-29',end:'2027-01-03'},daily:[{date:'2025-12-31',net_result:999,operations:1},{date:'2026-01-01',net_result:100,operations:1},{date:'2026-02-01',net_result:-30,operations:1},{date:'2026-12-31',net_result:5,operations:1},{date:'2027-01-01',net_result:999,operations:1}]}");
+ assert.equal(h.run("resultsYearPeriods(2026,'month').length"),12);
+ for(const view of ['month','week'])assert.equal(h.run(`resultsYearPeriods(2026,'${view}').reduce((s,p)=>s+p.total,0)`),75);
+ assert.equal(h.run("resultsYearPeriods(2026,'week')[0].start"),'2026-01-01');
+ assert.equal(h.run("resultsYearPeriods(2026,'week').at(-1).end"),'2026-12-31');
+ assert.equal(h.run("resultsYearPeriods(2024,'month')[1].end"),'2024-02-29');
+});
+
+test('partial coverage and incomplete costs remain explicit alongside visible period totals',()=>{
+ const h=harness();h.run("resultsState.view='month';resultsState.year=2026;resultsState.month='2026-02';resultsState.analysis={period:{start:'2026-02-02',end:'2026-02-04'},daily:[{date:'2026-02-02',net_result:0,operations:1,incomplete:0},{date:'2026-02-03',net_result:-10,operations:2,incomplete:1}]};renderResultsExplorer()");
+ assert.match(h.get('results-period-total').textContent,/Year total · selected coverage: -€10.00 · \? incomplete/);
+ const cells=h.get('results-periods').children;
+ assert.equal(cells.length,12);assert.equal(cells[0].disabled,true);
+ assert.equal(cells[1].children[1].textContent,'-€10.00');
+ assert.match(cells[1].children[2].textContent,/partial.*incomplete/);
+ assert.match(cells[1].className,/heat-negative.*cost-incomplete/);
+});
+
+test('week detail retains all seven daily amounts when crossing a month',()=>{
+ const h=harness();h.run("resultsState.month='2026-01';resultsState.week={start:'2026-01-26',end:'2026-02-01'};resultsState.analysis={period:{start:'2026-01-01',end:'2026-02-28'},daily:[{date:'2026-02-01',net_result:42,operations:1,incomplete:0}]};renderResultsCalendar()");
+ const buttons=h.get('results-calendar').children.filter((c: any)=>c.type==='button');
+ assert.equal(buttons.length,7);assert.equal(buttons[6].children[0].textContent,'1');assert.equal(buttons[6].children[1].textContent,'42.00');
+ assert.equal(h.get('results-month').textContent,'2026-01-26 – 2026-02-01');
+});

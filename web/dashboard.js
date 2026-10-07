@@ -1845,7 +1845,7 @@ function initDashGroups() {
 }
 
 // A common immutable analysis snapshot drives every results consultation surface.
-const resultsState = { analysis: null, generation: 0, historyGeneration: 0, page: 1, day: null, month: null, curve: null, bars: null };
+const resultsState = { analysis: null, generation: 0, historyGeneration: 0, page: 1, day: null, month: null, view: 'day', year: null, week: null, curve: null, bars: null };
 const resultsEl = id => document.getElementById(`results-${id}`);
 const resultsMoney = value => value == null ? 'Unavailable' : new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(value);
 const resultsTone = value => value == null ? 'result-unavailable' : value > 0 ? 'result-positive' : value < 0 ? 'result-negative' : 'result-zero';
@@ -1871,6 +1871,7 @@ function invalidateResults() {
   setPdfExportAvailability(false);
   resultsEl('cards').replaceChildren(); resultsEl('history').replaceChildren();
   resultsEl('calendar').replaceChildren(); resultsEl('projection').replaceChildren();
+  resultsEl('periods').replaceChildren(); resultsEl('period-total').textContent = ''; resultsEl('period-coverage').textContent = '';
   resultsState.curve?.destroy(); resultsState.bars?.destroy(); resultsState.curve = resultsState.bars = null;
   if (resultsEl('detail').open) resultsEl('detail').close();
 }
@@ -1884,7 +1885,9 @@ async function loadResults() {
     const analysis = await loadJSON(`${BASE}/api/results?${query}`);
     if (generation !== resultsState.generation) return;
     resultsState.analysis = analysis; resultsState.page = 1; resultsState.day = null;
-    resultsState.month = analysis.period.end.slice(0,7);
+    const currentMonth = resultsDate(new Date()).slice(0,7);
+    resultsState.month = currentMonth >= analysis.period.start.slice(0,7) && currentMonth <= analysis.period.end.slice(0,7) ? currentMonth : analysis.period.end.slice(0,7);
+    resultsState.year = Number(resultsState.month.slice(0,4)); resultsState.week = null;
     resultsEl('start').value = analysis.period.start; resultsEl('end').value = analysis.period.end;
     resultsEl('status').textContent = `${analysis.period.start} – ${analysis.period.end} · revision ${analysis.revision}`;
     resultsEl('coverage').textContent = `First movement: ${analysis.coverage.first_movement || 'unavailable'} · Last imported movement: ${analysis.coverage.last_movement || 'unavailable'}. ${analysis.coverage.warning || 'Movement dates do not prove complete statement coverage.'}`;
@@ -1897,7 +1900,7 @@ async function loadResults() {
     }
     const prev = analysis.previous;
     resultsEl('comparison').textContent = prev ? `Previous period ${prev.period.start} – ${prev.period.end}: ${resultsMoney(prev.net_result)}. ${prev.comparable ? `Change ${resultsMoney(m.net_result-prev.net_result)}.` : 'Coverage does not support a complete comparison.'}` : 'No comparable previous period.';
-    renderResultsCharts(); renderResultsCalendar(); await loadResultsHistory();
+    renderResultsCharts(); renderResultsExplorer(); await loadResultsHistory();
     if (generation !== resultsState.generation) return;
     resultsEl('csv').disabled = false; setPdfExportAvailability(true);
     const projection = await loadJSON(`${BASE}/api/automatic_projection?revision=${encodeURIComponent(analysis.revision)}`);
@@ -1917,22 +1920,100 @@ function renderResultsCharts() {
   }
   resultsState.bars = new Chart(resultsEl('bars'),{type:'bar',data:{labels:[...grouped.keys()],datasets:[{label:'Known net realized EUR',data:[...grouped.values()],backgroundColor:[...grouped.values()].map(v=>v<0?CHART_RED:CHART_GREEN)}]},options:{responsive:true,maintainAspectRatio:false}});
 }
+// Every period is clipped to the selected immutable analysis, including boundary weeks.
+function resultsPeriodStats(start, end) {
+  const a = resultsState.analysis;
+  const coveredStart = start > a.period.start ? start : a.period.start;
+  const coveredEnd = end < a.period.end ? end : a.period.end;
+  const days = a.daily.filter(d => d.date >= coveredStart && d.date <= coveredEnd);
+  return {start, end, coveredStart, coveredEnd, available: coveredStart <= coveredEnd,
+    partial: coveredStart !== start || coveredEnd !== end,
+    total: days.reduce((sum,d) => sum + (d.net_result || 0),0),
+    operations: days.reduce((sum,d) => sum + (d.operations || 0),0),
+    incomplete: days.reduce((sum,d) => sum + (d.incomplete || 0),0)};
+}
+function resultsYearPeriods(year, view) {
+  const periods = [];
+  if (view === 'month') {
+    for(let m=0;m<12;m++) {
+      const start=resultsDate(new Date(year,m,1)), end=resultsDate(new Date(year,m+1,0));
+      periods.push({...resultsPeriodStats(start,end),label:new Date(year,m,1).toLocaleDateString('en-IE',{month:'long'})});
+    }
+  } else {
+    const cursor=new Date(year,0,1);cursor.setDate(cursor.getDate()-(cursor.getDay()+6)%7);
+    while(cursor.getFullYear() <= year) {
+      const monday=resultsDate(cursor), sunday=new Date(cursor);sunday.setDate(sunday.getDate()+6);
+      const start=monday < `${year}-01-01` ? `${year}-01-01` : monday;
+      const end=resultsDate(sunday) > `${year}-12-31` ? `${year}-12-31` : resultsDate(sunday);
+      periods.push({...resultsPeriodStats(start,end),label:`${start.slice(5)} – ${end.slice(5)}`,month:start.slice(0,7)});
+      cursor.setDate(cursor.getDate()+7);
+    }
+  }
+  return periods;
+}
+function saveResultsView() {
+  try { localStorage.setItem('klarwert-pl-view',resultsState.view); } catch(e) {}
+}
+function renderResultsExplorer() {
+  const a=resultsState.analysis;if(!a)return;
+  const year=resultsState.year || Number(resultsState.month.slice(0,4));resultsState.year=year;
+  const yearSelect=resultsEl('year');yearSelect.replaceChildren();
+  for(let y=Number(a.period.start.slice(0,4));y<=Number(a.period.end.slice(0,4));y++) {
+    const option=document.createElement('option');option.value=String(y);option.textContent=String(y);yearSelect.append(option);
+  }
+  yearSelect.value=String(year);resultsEl('view').value=resultsState.view;
+  const isDay=resultsState.view==='day', root=resultsEl('periods');root.replaceChildren();root.hidden=isDay;
+  resultsEl('day-view').hidden=!isDay;resultsEl('back-periods').hidden=!resultsState.week;
+  resultsEl('month-prev').hidden=!!resultsState.week;resultsEl('month-next').hidden=!!resultsState.week;
+  const monthStart=`${resultsState.month}-01`, monthEnd=resultsDate(new Date(year,Number(resultsState.month.slice(5)),0));
+  const start=isDay ? resultsState.week?.start || monthStart : `${year}-01-01`;
+  const end=isDay ? resultsState.week?.end || monthEnd : `${year}-12-31`;
+  const stats=resultsPeriodStats(start,end);
+  const label=isDay ? resultsState.week ? 'Week' : 'Month' : 'Year';
+  resultsEl('period-total').textContent=`${label} total${stats.partial ? ' · selected coverage' : ''}: ${stats.available ? resultsMoney(stats.total) : 'Outside selected period'}${stats.incomplete ? ' · ? incomplete costs' : ''}`;
+  resultsEl('period-total').className=stats.available ? resultsTone(stats.total) : 'result-unavailable';
+  const yearToDate=year===new Date().getFullYear() && !isDay && stats.coveredStart===`${year}-01-01` && stats.coveredEnd<=resultsDate(new Date());
+  resultsEl('period-coverage').textContent=stats.available ? `${stats.coveredStart} – ${stats.coveredEnd} · ${stats.operations} realizations · Known net result${yearToDate ? ' · year to date' : ''}. Uses the selected period above.` : 'Choose a period with imported coverage.';
+  if(isDay) { renderResultsCalendar(); return; }
+  const periods=resultsYearPeriods(year,resultsState.view),peak=Math.max(1,...periods.map(p=>Math.abs(p.total)));
+  root.className=`results-periods results-periods-${resultsState.view}`;
+  let lastMonth=null;
+  for(const p of periods) {
+    if(resultsState.view==='week' && p.month!==lastMonth) {
+      const heading=document.createElement('h4');heading.className='results-period-group';heading.textContent=new Date(`${p.month}-01T12:00:00`).toLocaleDateString('en-IE',{month:'long'});root.append(heading);lastMonth=p.month;
+    }
+    const button=document.createElement('button');button.type='button';button.disabled=!p.available;
+    button.className='results-period-cell ' + (!p.operations ? 'no-data' : p.total>0 ? 'heat-positive' : p.total<0 ? 'heat-negative' : 'realized-zero') + (p.incomplete ? ' cost-incomplete' : '');
+    button.style.setProperty('--heat',String(12+65*Math.abs(p.total)/peak));
+    const title=document.createElement('span');title.textContent=p.label;
+    const value=document.createElement('strong');value.textContent=p.available ? p.operations ? resultsMoney(p.total) : '—' : 'Outside period';
+    const note=document.createElement('small');note.textContent=`${p.operations} ops${p.partial && p.available ? ' · partial' : ''}${p.incomplete ? ' · ? incomplete' : ''}`;
+    button.append(title,value,note);button.setAttribute('aria-label',`${p.start} to ${p.end}, ${value.textContent}, ${note.textContent}`);
+    button.addEventListener('click',()=>{resultsState.week=resultsState.view==='week' ? {start:p.start,end:p.end} : null;resultsState.month=p.start.slice(0,7);resultsState.view='day';saveResultsView();renderResultsExplorer();});root.append(button);
+  }
+}
 function renderResultsCalendar() {
   const a=resultsState.analysis; if(!a)return;
   const [year,month]=resultsState.month.split('-').map(Number), days=new Date(year,month,0).getDate();
-  resultsEl('month').textContent=resultsState.month; const grid=resultsEl('calendar'); grid.replaceChildren();
-  const offset=(new Date(year,month-1,1).getDay()+6)%7;
+  resultsEl('month').textContent=resultsState.week ? `${resultsState.week.start} – ${resultsState.week.end}` : resultsState.month; const grid=resultsEl('calendar'); grid.replaceChildren();
+  resultsEl('month-prev').disabled=resultsState.month<=a.period.start.slice(0,7);
+  resultsEl('month-next').disabled=resultsState.month>=a.period.end.slice(0,7);
+  const first=resultsState.week ? new Date(`${resultsState.week.start}T12:00:00`) : new Date(year,month-1,1);
+  const offset=(first.getDay()+6)%7;
   for(let i=0;i<offset;i++)grid.append(document.createElement('span'));
   const daily=new Map(a.daily.map(d=>[d.date,d]));
-  const peak=Math.max(0,...a.daily.filter(d=>d.date.startsWith(resultsState.month)).map(d=>Math.abs(d.net_result || 0))) || 1;
-  for(let i=1;i<=days;i++) {
-    const date=`${resultsState.month}-${String(i).padStart(2,'0')}`, day=daily.get(date), button=document.createElement('button');
+  const dates=[];
+  if(resultsState.week) {const cursor=new Date(first);while(resultsDate(cursor)<=resultsState.week.end){dates.push(resultsDate(cursor));cursor.setDate(cursor.getDate()+1);}}
+  else for(let i=1;i<=days;i++)dates.push(`${resultsState.month}-${String(i).padStart(2,'0')}`);
+  const peak=Math.max(1,...dates.map(date=>Math.abs(daily.get(date)?.net_result || 0)));
+  for(const date of dates) {
+    const day=daily.get(date), button=document.createElement('button');
     button.type='button'; button.disabled=date<a.period.start||date>a.period.end;
     const value=day?.net_result || 0;
     button.className='results-day ' + (!day?.operations ? 'no-data' : value === 0 ? 'realized-zero' : value > 0 ? 'heat-positive' : 'heat-negative') + (day?.incomplete ? ' cost-incomplete' : '') + (resultsState.day === date ? ' is-selected' : '');
     button.style.setProperty('--heat', String(12 + 65 * Math.abs(value) / peak));
     button.setAttribute('aria-pressed',String(resultsState.day === date));
-    const number=document.createElement('span');number.className='results-day-number';number.textContent=String(i);
+    const number=document.createElement('span');number.className='results-day-number';number.textContent=String(Number(date.slice(8)));
     const amount=document.createElement('span');amount.className='results-day-value';amount.textContent=day?.operations ? resultsMoney(day.net_result).replace('€','') : '—';
     amount.style.setProperty('--digits',String(amount.textContent.length));
     const count=document.createElement('span');count.className='results-day-count';count.textContent=`${day?.operations||0} ops${day?.incomplete?' ?':''}`;
@@ -2006,9 +2087,14 @@ async function downloadResultsFile(url,filename) {
   const blob=await response.blob(),link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
 }
 if(resultsEl('period')) {
+  try { const saved=localStorage.getItem('klarwert-pl-view');if(['day','week','month'].includes(saved))resultsState.view=saved; } catch(e) {}
   resultsEl('apply').addEventListener('click',loadResults);
   resultsEl('aggregation').addEventListener('change',renderResultsCharts);
-  for(const [id,step] of [['month-prev',-1],['month-next',1]])resultsEl(id).addEventListener('click',()=>{const date=new Date(`${resultsState.month}-01T12:00:00`);date.setMonth(date.getMonth()+step);resultsState.month=resultsDate(date).slice(0,7);renderResultsCalendar();});
+  resultsEl('evolution').addEventListener('toggle',()=>{if(resultsEl('evolution').open)resizeAllCharts();});
+  resultsEl('view').addEventListener('change',()=>{resultsState.view=resultsEl('view').value;resultsState.week=null;saveResultsView();renderResultsExplorer();});
+  resultsEl('year').addEventListener('change',()=>{const a=resultsState.analysis;if(!a)return;resultsState.year=Number(resultsEl('year').value);resultsState.week=null;resultsState.month=`${resultsState.year}-${resultsState.month.slice(5)}`;resultsState.month=resultsState.month<a.period.start.slice(0,7)?a.period.start.slice(0,7):resultsState.month>a.period.end.slice(0,7)?a.period.end.slice(0,7):resultsState.month;renderResultsExplorer();});
+  resultsEl('back-periods').addEventListener('click',()=>{resultsState.week=null;resultsState.view='week';saveResultsView();renderResultsExplorer();});
+  for(const [id,step] of [['month-prev',-1],['month-next',1]])resultsEl(id).addEventListener('click',()=>{const date=new Date(`${resultsState.month}-01T12:00:00`);date.setMonth(date.getMonth()+step);resultsState.month=resultsDate(date).slice(0,7);resultsState.year=date.getFullYear();renderResultsExplorer();});
   for(const id of ['search-apply','history-kind','clear-day'])resultsEl(id).addEventListener(id==='history-kind'?'change':'click',()=>{resultsState.page=1;if(id==='clear-day'){resultsState.day=null;renderResultsCalendar();}loadResultsHistory();});
   resultsEl('search').addEventListener('keydown',e=>{if(e.key==='Enter'){resultsState.page=1;loadResultsHistory();}});
   for(const [id,step]of [['page-prev',-1],['page-next',1]])resultsEl(id).addEventListener('click',()=>{resultsState.page+=step;loadResultsHistory();});
