@@ -120,6 +120,8 @@ h3 { font-size: 0.95rem; margin: 0 0 4px; font-weight: 600; color: var(--text-pr
 #export-pdf-btn[aria-busy="true"] { cursor: progress; }
 #pdf-export-status { font-size: 0.85rem; color: var(--text-secondary); }
 #pdf-export-status.error { color: var(--color-negative); }
+.pdf-detail-option { display: inline-flex; align-items: center; gap: 5px; font-size: 0.85rem; color: var(--text-secondary); }
+.pdf-detail-option input { margin: 0; }
 
 /* Summary Cards */
 .cards {

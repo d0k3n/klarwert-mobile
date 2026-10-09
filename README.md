@@ -103,10 +103,13 @@ filesystem, which is enough to exercise the UI before deploying to a device.
 
 ## Dashboard PDF report
 
-After loading a portfolio, use **Export PDF** in the header to create a compact
-dashboard summary. The report contains the key metric cards, monthly P&amp;L
-heatmap, and dashboard charts; it deliberately excludes tables and transaction
-detail. On Android the generated PDF is saved temporarily and opened through
+After loading a portfolio, use **Export PDF** in the header to summarize the
+selected period. The report includes highlighted realized results, vector
+charts, instrument contributions, recorded charges and compact daily/monthly
+tables. Select **PDF operation appendix** to include every realization in the
+period. Unknown-cost operations remain explicitly marked and excluded from
+valid statistics. See [docs/REPORT_PDF.md](docs/REPORT_PDF.md) for details.
+On Android the generated PDF is saved temporarily and opened through
 the system share sheet. In a browser it downloads directly. Like the rest of
 the app, report generation is local to the device.
 

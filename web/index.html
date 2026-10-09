@@ -32,6 +32,7 @@
     <button id="export-pdf-btn" type="button" onclick="window.exportDashboardPdf()" disabled>
       <span>Export PDF</span>
     </button>
+    <label class="pdf-detail-option"><input id="pdf-include-realizations" type="checkbox"> PDF operation appendix</label>
     <input id="csv-input" type="file" accept=".csv,text/csv,text/plain" style="display:none" onchange="window.uploadCSV(this)">
     <span id="reload-status"></span>
     <span id="pdf-export-status" role="status" aria-live="polite"></span>
@@ -267,8 +268,8 @@
 </section>
 
 <section>
-  <h2>Derivatives by Underlying Asset · full history</h2>
-  <p>Ranked by realized P&amp;L in EUR, including sales, redemptions and knock-outs, after fees and taxes. Open-position gains are excluded. Assign the same asset name to its different ISINs below; unidentified products remain Unassigned.</p>
+  <h2>Derivatives by Underlying Asset &middot; full history</h2>
+  <p>Grouped automatically by the underlying asset in the statement description, falling back to the product name when unavailable. Manual associations take priority. Ranked by realized P&amp;L in EUR, including sales, redemptions and knock-outs, after fees and taxes. Open-position gains are excluded.</p>
   <div class="table-wrapper"><table id="derivative-underlyings-table">
     <thead><tr><th data-sort="underlying">Underlying asset</th><th data-sort="products" class="num">Products</th><th data-sort="total_invested" class="num">Invested</th><th data-sort="total_realized_pl" class="num">Realized P&amp;L</th></tr></thead><tbody></tbody>
   </table></div>

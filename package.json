@@ -1,6 +1,6 @@
 {
   "name": "klarwert-mobile",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "Klarwert mobile app (Capacitor + TypeScript port of the Python engine)",

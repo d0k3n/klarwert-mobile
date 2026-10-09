@@ -56,12 +56,14 @@ window.exportDashboardPdf = async function () {
   }
 
   try {
+    const includeRealizations = Boolean(document.getElementById('pdf-include-realizations')?.checked);
     const result = window.KlarwertNative?.isNative && typeof window.KlarwertNative.sharePdf === "function"
       ? await window.KlarwertReport.exportDashboardPdf({
         analysis: resultsState.analysis ? structuredClone(resultsState.analysis) : undefined,
+        includeRealizations,
         shareBase64: (filename, base64) => window.KlarwertNative.sharePdf(filename, base64),
       })
-      : await window.KlarwertReport.exportDashboardPdf({ analysis: resultsState.analysis ? structuredClone(resultsState.analysis) : undefined });
+      : await window.KlarwertReport.exportDashboardPdf({ analysis: resultsState.analysis ? structuredClone(resultsState.analysis) : undefined, includeRealizations });
     if (status) status.textContent = result?.shared ? "PDF ready to share." : "PDF downloaded.";
   } catch (error) {
     console.error("Dashboard PDF export failed:", error);

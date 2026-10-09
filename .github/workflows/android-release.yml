@@ -143,10 +143,14 @@ jobs:
             echo "Release $RELEASE_TAG already exists" >&2
             exit 1
           fi
+          notes=(--generate-notes)
+          if [[ -f "docs/RELEASE_$VERSION.md" ]]; then
+            notes=(--notes-file "docs/RELEASE_$VERSION.md")
+          fi
           gh release create "$RELEASE_TAG" \
             "$APK_PATH" \
             "$CHECKSUM_PATH" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Klarwert $VERSION" \
-            --generate-notes
+            "${notes[@]}"
